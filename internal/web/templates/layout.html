@@ -1,0 +1,47 @@
+{{define "layout"}}<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · schemaver</title>
+<style>
+:root{--bg:#fbfbfa;--fg:#1a1a19;--dim:#6b6b68;--line:#e3e3e0;--card:#fff;
+--add:#1a7f4b;--mod:#9a6700;--del:#b42318;--accent:#2f5fd0}
+@media(prefers-color-scheme:dark){:root{--bg:#151514;--fg:#e8e8e6;--dim:#9a9a96;
+--line:#2c2c2a;--card:#1d1d1c;--add:#4ac585;--mod:#d4a72c;--del:#f2776b;--accent:#7aa2f7}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);
+font:14px/1.55 ui-sans-serif,-apple-system,"Segoe UI",Roboto,sans-serif}
+header{border-bottom:1px solid var(--line);padding:14px 24px;display:flex;
+gap:22px;align-items:baseline;flex-wrap:wrap}
+header b{font-size:15px;letter-spacing:-.01em}
+header a{color:var(--dim);text-decoration:none}
+header a:hover,header a.on{color:var(--fg)}
+main{padding:24px;max-width:1180px;margin:0 auto}
+h1{font-size:19px;margin:0 0 4px;letter-spacing:-.01em}
+.sub{color:var(--dim);margin:0 0 20px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.scroll{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th{text-align:left;font-weight:600;color:var(--dim);padding:9px 14px;
+border-bottom:1px solid var(--line);white-space:nowrap;font-size:12px}
+td{padding:9px 14px;border-bottom:1px solid var(--line);vertical-align:top}
+tr:last-child td{border-bottom:0}
+code,.fp{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
+.fp{color:var(--dim)}
+a{color:var(--accent)}
+.tag{display:inline-block;padding:1px 7px;border-radius:99px;font-size:11px;
+border:1px solid var(--line);color:var(--dim);white-space:nowrap}
+.added{color:var(--add)}.modified{color:var(--mod)}.removed{color:var(--del)}
+.err{color:var(--del)}
+.empty{padding:40px 14px;text-align:center;color:var(--dim)}
+.arrow{color:var(--dim);padding:0 4px}
+pre{background:var(--card);border:1px solid var(--line);border-radius:8px;
+padding:14px;overflow-x:auto;font-size:12px;line-height:1.5}
+</style></head><body>
+<header>
+  <b>schemaver</b>
+  <a href="/" {{if eq .Nav "fleet"}}class="on"{{end}}>Fleet</a>
+  <a href="/history" {{if eq .Nav "history"}}class="on"{{end}}>History</a>
+  <a href="/drift" {{if eq .Nav "drift"}}class="on"{{end}}>Drift</a>
+</header>
+<main>{{template "content" .}}</main>
+</body></html>{{end}}

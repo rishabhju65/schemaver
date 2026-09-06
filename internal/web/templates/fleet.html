@@ -1,0 +1,26 @@
+{{define "content"}}
+<h1>Fleet</h1>
+<p class="sub">Every registered database and the schema last observed on it.</p>
+<div class="card scroll">
+<table>
+<tr><th>Database</th><th>Instance</th><th>Environment</th><th>Version</th>
+<th>Changes</th><th>Drift</th><th>Last read</th><th>State</th></tr>
+{{range .Rows}}
+<tr>
+  <td><a href="/database/{{.ID}}">{{.Name}}</a></td>
+  <td>{{.Instance}}</td>
+  <td>{{if .Environment}}<span class="tag">{{.Environment}}</span>{{else}}<span class="fp">—</span>{{end}}</td>
+  <td class="fp">{{if .Fingerprint}}{{short .Fingerprint}}{{else}}—{{end}}</td>
+  <td>{{.Changes}}</td>
+  <td>{{if .OpenDrifts}}<span class="removed">{{.OpenDrifts}} open</span>{{else}}<span class="fp">—</span>{{end}}</td>
+  <td class="fp">{{ago .LastReadAt}}</td>
+  <td>{{if .LastError}}<span class="err">unreachable</span>
+      {{else if not .Managed}}<span class="fp">not managed</span>
+      {{else}}<span class="added">ok</span>{{end}}</td>
+</tr>
+{{else}}
+<tr><td colspan="8" class="empty">No databases registered yet.</td></tr>
+{{end}}
+</table>
+</div>
+{{end}}

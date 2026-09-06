@@ -1,0 +1,24 @@
+{{define "content"}}
+<h1>{{.Entry.Database}}</h1>
+<p class="sub">
+<span class="fp">{{short .Entry.From}}</span> <span class="arrow">→</span>
+<span class="fp">{{short .Entry.To}}</span> · observed {{stamp .Entry.ObservedAt}} ·
+{{.Summary.Describe}}</p>
+<div class="card scroll">
+<table>
+<tr><th>Change</th><th>Type</th><th>Object</th></tr>
+{{range .Changes}}
+<tr><td class="{{.Kind}}">{{.Kind}}</td><td class="fp">{{.Type}}</td><td><code>{{.Name}}</code></td></tr>
+{{else}}
+<tr><td colspan="3" class="empty">
+The fingerprint changed but no object was added, removed or replaced.
+A change confined to one object's internals shows as <em>modified</em>;
+seeing nothing here means the difference is outside what object-level
+comparison covers.</td></tr>
+{{end}}
+</table>
+</div>
+<p class="sub" style="margin-top:16px">
+This is an object-level comparison: it reports which objects differ, not how.
+Saying <em>what</em> changed inside one needs the semantic diff engine.</p>
+{{end}}

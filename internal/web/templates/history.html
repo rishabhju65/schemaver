@@ -1,0 +1,35 @@
+{{define "content"}}
+<h1>{{if .Database}}{{.Database}}{{else}}Schema history{{end}}</h1>
+<p class="sub">
+{{if .Database}}Every observed change to this database.
+{{else}}Every observed schema change, newest first.{{end}}
+Nothing here was applied by schemaver — with no executor yet, every change
+arrived from outside, which is what drift means.</p>
+<div class="card scroll">
+<table>
+<tr><th>When</th>{{if not .Database}}<th>Database</th><th>Environment</th>{{end}}
+<th>Change</th><th>Read</th></tr>
+{{range .Entries}}
+<tr>
+  <td class="fp">{{stamp .ObservedAt}}</td>
+  {{if not $.Database}}
+  <td><a href="/database/{{.DatabaseID}}">{{.Database}}</a><br>
+      <span class="fp">{{.Instance}}</span></td>
+  <td>{{if .Environment}}<span class="tag">{{.Environment}}</span>{{else}}<span class="fp">—</span>{{end}}</td>
+  {{end}}
+  <td>
+    {{if .Failed}}<span class="err">read failed</span><br><span class="fp">{{.Error}}</span>
+    {{else if .Initial}}<span class="added">first observed</span>
+      <span class="fp">{{short .To}}</span>
+    {{else}}<a href="/change/{{.SnapshotID}}"><span class="fp">{{short .From}}</span></a>
+      <span class="arrow">→</span><span class="fp">{{short .To}}</span>
+    {{end}}
+  </td>
+  <td class="fp">{{if .ReadMS}}{{.ReadMS}} ms{{else}}—{{end}}</td>
+</tr>
+{{else}}
+<tr><td colspan="5" class="empty">No changes observed yet.</td></tr>
+{{end}}
+</table>
+</div>
+{{end}}

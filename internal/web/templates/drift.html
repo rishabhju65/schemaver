@@ -1,0 +1,26 @@
+{{define "content"}}
+<h1>Drift</h1>
+<p class="sub">Databases whose schema differs from what they are expected to match.</p>
+<div class="card scroll">
+<table>
+<tr><th>Database</th><th>Environment</th><th>Compared against</th>
+<th>Observed</th><th>Expected</th><th>Since</th><th>Status</th></tr>
+{{range .Rows}}
+<tr>
+  <td>{{.Database}}<br><span class="fp">{{.Instance}}</span></td>
+  <td>{{if .Environment}}<span class="tag">{{.Environment}}</span>{{else}}<span class="fp">—</span>{{end}}</td>
+  <td>{{if eq .Source "peer"}}{{.Peer}}{{else}}declared schema{{end}}</td>
+  <td class="fp removed">{{short .Observed}}</td>
+  <td class="fp">{{short .Expected}}</td>
+  <td class="fp">{{stamp .FirstSeen}}</td>
+  <td>{{if eq .Status "open"}}<span class="removed">open</span>
+      {{else}}<span class="fp">{{.Status}}</span>{{end}}</td>
+</tr>
+{{else}}
+<tr><td colspan="7" class="empty">
+No divergence detected. Note that a database with nothing configured to compare
+against will never appear here — that is not the same as being in agreement.</td></tr>
+{{end}}
+</table>
+</div>
+{{end}}
