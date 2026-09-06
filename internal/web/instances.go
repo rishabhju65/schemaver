@@ -88,7 +88,12 @@ func describeConnectError(host string, err error) error {
 }
 
 func (s *Server) instances(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.scoped(r).Instances(r.Context())
+	scope, serr := s.scoped(r)
+	if serr != nil {
+		http.Error(w, serr.Error(), http.StatusInternalServerError)
+		return
+	}
+	rows, err := scope.Instances(r.Context())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -156,7 +161,12 @@ func (s *Server) instanceNew(w http.ResponseWriter, r *http.Request) {
 	if name == "" {
 		name = fmt.Sprintf("%s:%d", form.Host, port)
 	}
-	id, err := s.scoped(r).RegisterInstance(ctx, name, form.Host, port,
+	scope, serr := s.scoped(r)
+	if serr != nil {
+		http.Error(w, serr.Error(), http.StatusInternalServerError)
+		return
+	}
+	id, err := scope.RegisterInstance(ctx, name, form.Host, port,
 		form.TLSMode, form.Username, form.Password)
 	if err != nil {
 		s.render(w, r, "instance_new", "Add a server", "instances", data(form, pre, err))
@@ -198,12 +208,17 @@ func (s *Server) instanceDetail(w http.ResponseWriter, r *http.Request) {
 		saved = saveErr == nil
 	}
 
-	inst, dbs, err := s.scoped(r).InstanceDetail(r.Context(), id)
+	scope, err := s.scoped(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	inst, dbs, err := scope.InstanceDetail(r.Context(), id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
-	envs, err := s.scoped(r).Environments(r.Context())
+	envs, err := scope.Environments(r.Context())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -245,7 +260,11 @@ func (s *Server) saveInstanceSettings(r *http.Request, instanceID int64) error {
 			PeerID:        optionalID(r.FormValue(fmt.Sprintf("peer-%d", id))),
 		})
 	}
-	return s.scoped(r).ApplyDatabaseSettings(r.Context(), instanceID, settings)
+	scope, err := s.scoped(r)
+	if err != nil {
+		return err
+	}
+	return scope.ApplyDatabaseSettings(r.Context(), instanceID, settings)
 }
 
 // optionalID parses a select value that may be the empty "no choice" option.

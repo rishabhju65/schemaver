@@ -112,6 +112,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /change/{id}", s.requireUser(s.change))
 	mux.HandleFunc("GET /drift", s.requireUser(s.drift))
 	mux.HandleFunc("GET /instances", s.requireUser(s.instances))
+	mux.HandleFunc("POST /project", s.requireUser(s.switchProject))
 	mux.HandleFunc("GET /instances/{id}", s.requireUser(s.instanceDetail))
 
 	// Registering a server stores a credential, so these need an account that
@@ -130,23 +131,7 @@ func (s *Server) Handler() http.Handler {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
-	return s.authenticate(mux)
-}
-
-// scoped returns a store bound to the signed-in user's account.
-//
-// Every handler that reads or writes account data goes through this. The
-// unscoped store is not reachable from a request handler by design: isolation is
-// a property of which type a method lives on, not of remembering to filter.
-func (s *Server) scoped(r *http.Request) *store.Scope {
-	u := userFrom(r.Context())
-	if u == nil {
-		// Unreachable: every caller sits behind requireUser. Binding to an
-		// impossible account rather than panicking means a routing mistake
-		// returns nothing instead of everything.
-		return s.store.For(-1)
-	}
-	return s.store.For(u.AccountID)
+	return s.authenticate(s.withProjects(mux))
 }
 
 // renderAuth draws the sign-in and sign-up pages, which have no account attached.
@@ -177,7 +162,14 @@ func (s *Server) renderWith(w http.ResponseWriter, r *http.Request, page, title,
 	data["Title"], data["Nav"] = title, nav
 	user := userFrom(r.Context())
 	data["User"] = user
-	data["CanWrite"] = user != nil && user.Role.CanWrite()
+	data["Projects"] = membershipsFrom(r.Context())
+	data["CurrentProject"] = currentProject(r.Context())
+	data["AllProjects"] = allProjects
+	data["OrgWide"] = user != nil && user.OrgRole.ReadsEverything()
+	// An organisation viewer reads across every project and changes none of
+	// them, so write controls are hidden while looking organisation-wide.
+	data["CanWrite"] = user != nil && user.Role.CanWrite() &&
+		currentProject(r.Context()) != allProjects
 	if c, err := r.Cookie(sessionCookie); err == nil {
 		data["CSRF"] = csrfToken(c.Value)
 	}
@@ -190,7 +182,12 @@ func (s *Server) renderWith(w http.ResponseWriter, r *http.Request, page, title,
 }
 
 func (s *Server) fleet(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.scoped(r).Fleet(r.Context())
+	scope, serr := s.scoped(r)
+	if serr != nil {
+		http.Error(w, serr.Error(), http.StatusInternalServerError)
+		return
+	}
+	rows, err := scope.Fleet(r.Context())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -199,7 +196,12 @@ func (s *Server) fleet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) history(w http.ResponseWriter, r *http.Request) {
-	entries, err := s.scoped(r).Timeline(r.Context(), store.TimelineFilter{Limit: 200})
+	scope, serr := s.scoped(r)
+	if serr != nil {
+		http.Error(w, serr.Error(), http.StatusInternalServerError)
+		return
+	}
+	entries, err := scope.Timeline(r.Context(), store.TimelineFilter{Limit: 200})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -214,7 +216,12 @@ func (s *Server) database(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not a database id", http.StatusBadRequest)
 		return
 	}
-	entries, err := s.scoped(r).Timeline(r.Context(),
+	scope, serr := s.scoped(r)
+	if serr != nil {
+		http.Error(w, serr.Error(), http.StatusInternalServerError)
+		return
+	}
+	entries, err := scope.Timeline(r.Context(),
 		store.TimelineFilter{DatabaseID: id, Limit: 200})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -235,7 +242,12 @@ func (s *Server) change(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not a snapshot id", http.StatusBadRequest)
 		return
 	}
-	entries, err := s.scoped(r).Timeline(r.Context(), store.TimelineFilter{Limit: 500})
+	scope, err := s.scoped(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	entries, err := scope.Timeline(r.Context(), store.TimelineFilter{Limit: 500})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -252,12 +264,12 @@ func (s *Server) change(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	before, err := s.scoped(r).Blob(r.Context(), entry.From)
+	before, err := scope.Blob(r.Context(), entry.From)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	after, err := s.scoped(r).Blob(r.Context(), entry.To)
+	after, err := scope.Blob(r.Context(), entry.To)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -272,7 +284,12 @@ func (s *Server) change(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) drift(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.scoped(r).Drifts(r.Context(), r.URL.Query().Get("all") == "1")
+	scope, serr := s.scoped(r)
+	if serr != nil {
+		http.Error(w, serr.Error(), http.StatusInternalServerError)
+		return
+	}
+	rows, err := scope.Drifts(r.Context(), r.URL.Query().Get("all") == "1")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

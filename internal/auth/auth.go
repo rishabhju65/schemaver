@@ -51,11 +51,31 @@ type User struct {
 	Role        Role
 	Disabled    bool
 
-	// AccountID is the tenant this user belongs to. Everything the user can
-	// reach is scoped to it, so it is carried on the session rather than looked
-	// up per request.
-	AccountID int64
+	// OrganizationID is the company this user belongs to.
+	OrganizationID int64
+
+	// OrgRole is standing across the whole organisation, distinct from any role
+	// held in a project.
+	OrgRole OrgRole
 }
+
+// OrgRole is a user's standing across an entire organisation.
+type OrgRole string
+
+const (
+	// OrgMember has no organisation-wide access; what they can see comes
+	// entirely from the projects they belong to.
+	OrgMember OrgRole = "member"
+	// OrgViewer reads every project in the organisation and owns none of them.
+	//
+	// This is the platform-team and auditor case, and the split matters: the
+	// value of seeing every schema at once should never come bundled with the
+	// ability to change any of them.
+	OrgViewer OrgRole = "viewer"
+)
+
+// ReadsEverything reports whether this standing grants organisation-wide reads.
+func (r OrgRole) ReadsEverything() bool { return r == OrgViewer }
 
 // SessionLifetime is how long a session stays valid without use.
 const SessionLifetime = 12 * time.Hour

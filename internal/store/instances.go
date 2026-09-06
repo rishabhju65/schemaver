@@ -32,8 +32,8 @@ func (s *Scope) Instances(ctx context.Context) ([]InstanceRow, error) {
 		         WHERE d.instance_id = i.id)
 		  FROM schemaver.instance i
 		  JOIN schemaver.credential c ON c.id = i.credential_id
-		 WHERE i.archived_at IS NULL AND i.account_id = $1
-		 ORDER BY i.name`, s.account)
+		 WHERE i.archived_at IS NULL AND i.project_id = ANY($1)
+		 ORDER BY i.name`, s.projects)
 	if err != nil {
 		return nil, fmt.Errorf("list instances: %w", err)
 	}
@@ -69,7 +69,7 @@ func (s *Scope) InstanceDetail(ctx context.Context, id int64) (*InstanceRow, []M
 		SELECT i.id, i.name, i.host, i.port, i.tls_mode, c.username, i.engine
 		  FROM schemaver.instance i
 		  JOIN schemaver.credential c ON c.id = i.credential_id
-		 WHERE i.id = $1 AND i.archived_at IS NULL AND i.account_id = $2`, id, s.account).
+		 WHERE i.id = $1 AND i.archived_at IS NULL AND i.project_id = ANY($2)`, id, s.projects).
 		Scan(&inst.ID, &inst.Name, &inst.Host, &inst.Port, &inst.TLSMode,
 			&inst.Username, &inst.Engine)
 	if err != nil {
@@ -81,8 +81,8 @@ func (s *Scope) InstanceDetail(ctx context.Context, id int64) (*InstanceRow, []M
 		       COALESCE(size_bytes, 0), COALESCE(last_error, '')
 		  FROM schemaver.database
 		 WHERE instance_id = $1 AND archived_at IS NULL
-		   AND instance_id IN (SELECT id FROM schemaver.instance WHERE account_id = $2)
-		 ORDER BY name`, id, s.account)
+		   AND instance_id IN (SELECT id FROM schemaver.instance WHERE project_id = ANY($2)
+		 ORDER BY name`, id, s.projects)
 	if err != nil {
 		return nil, nil, fmt.Errorf("list databases: %w", err)
 	}
@@ -111,7 +111,7 @@ type EnvironmentRow struct {
 func (s *Scope) Environments(ctx context.Context) ([]EnvironmentRow, error) {
 	rows, err := s.store.pool.Query(ctx,
 		`SELECT id, name, rank FROM schemaver.environment
-		  WHERE account_id = $1 ORDER BY rank`, s.account)
+		  WHERE project_id = ANY($1) ORDER BY rank`, s.projects)
 	if err != nil {
 		return nil, fmt.Errorf("list environments: %w", err)
 	}
@@ -141,6 +141,9 @@ type DatabaseSettings struct {
 // Applied in one transaction so a partly-saved form cannot leave half the
 // databases observed and half not.
 func (s *Scope) ApplyDatabaseSettings(ctx context.Context, instanceID int64, settings []DatabaseSettings) error {
+	if err := s.requireWrite(); err != nil {
+		return err
+	}
 	tx, err := s.store.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin: %w", err)
@@ -158,9 +161,9 @@ func (s *Scope) ApplyDatabaseSettings(ctx context.Context, instanceID int64, set
 			UPDATE schemaver.database
 			   SET managed = $2, environment_id = $3, expected_peer_id = $4
 			 WHERE id = $1 AND instance_id = $5
-			   AND instance_id IN (SELECT id FROM schemaver.instance WHERE account_id = $6)`,
+			   AND instance_id IN (SELECT id FROM schemaver.instance WHERE project_id = ANY($6))`,
 			set.ID, set.Managed, set.EnvironmentID, set.PeerID, instanceID,
-			s.account); err != nil {
+			s.projects); err != nil {
 			return fmt.Errorf("save settings for database %d: %w", set.ID, err)
 		}
 	}

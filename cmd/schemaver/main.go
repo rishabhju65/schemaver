@@ -46,8 +46,9 @@ Running the control plane (against schemaver's own metadata database):
                                                    interface together
   schemaver work     <metadata-url>                Observation loop only
   schemaver serve    <metadata-url>                Web interface only
-  schemaver account  <metadata-url> <name> <email> <password>
-                                                   Create an account and its
+  schemaver account  <metadata-url> <org-name> <email> <password>
+                                                   Create an organisation, its
+                                                   first project and its
                                                    administrator
 `
 
@@ -346,7 +347,7 @@ func sslMode(raw string) string {
 	return "prefer"
 }
 
-func runAccount(metadataURL, accountName, email, password string) error {
+func runAccount(metadataURL, orgName, email, password string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 
@@ -360,12 +361,14 @@ func runAccount(metadataURL, accountName, email, password string) error {
 	}
 	defer pool.Close()
 
-	account, user, err := store.New(pool, nil).CreateAccount(ctx, accountName, email, "", hash)
+	org, project, user, err := store.New(pool, nil).
+		CreateOrganization(ctx, orgName, "default", email, "", hash)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("created account %q (id %d) with administrator %s\n",
-		account.Name, account.ID, user.Email)
+	fmt.Printf("created organisation %q (id %d)\n", org.Name, org.ID)
+	fmt.Printf("  project %q (id %d)\n", project.Name, project.ID)
+	fmt.Printf("  administrator %s\n", user.Email)
 	fmt.Println("register database servers from the web interface")
 	return nil
 }

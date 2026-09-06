@@ -57,11 +57,19 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 			return
 		}
 		user, err := s.store.UserBySession(r.Context(), c.Value)
-		if err != nil {
-			// The session is gone or expired; clear the stale cookie so the
-			// browser stops presenting it.
+		if errors.Is(err, auth.ErrBadCredentials) {
+			// Gone or expired; clear the stale cookie so the browser stops
+			// presenting it.
 			clearSession(w, r)
 			next.ServeHTTP(w, r)
+			return
+		}
+		if err != nil {
+			// A database fault is not an expired session. Treating them alike
+			// silently signs everyone out and hides the cause — which is exactly
+			// what happened when a column rename left this query stale.
+			http.Error(w, "could not resolve session: "+err.Error(),
+				http.StatusInternalServerError)
 			return
 		}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), userKey, user)))
@@ -220,12 +228,16 @@ func (s *Server) signupHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	accountName := strings.TrimSpace(r.FormValue("account"))
-	if accountName == "" {
-		accountName = email
+	orgName := strings.TrimSpace(r.FormValue("organization"))
+	if orgName == "" {
+		orgName = email
 	}
-	_, user, err := s.store.CreateAccount(r.Context(), accountName, email,
-		strings.TrimSpace(r.FormValue("display_name")), hash)
+	projectName := strings.TrimSpace(r.FormValue("project"))
+	if projectName == "" {
+		projectName = "default"
+	}
+	_, _, user, err := s.store.CreateOrganization(r.Context(), orgName, projectName,
+		email, strings.TrimSpace(r.FormValue("display_name")), hash)
 	if err != nil {
 		fail(err)
 		return

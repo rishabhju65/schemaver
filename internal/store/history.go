@@ -74,9 +74,9 @@ func (s *Scope) Timeline(ctx context.Context, f TimelineFilter) ([]TimelineEntry
 		  LEFT JOIN schemaver.environment e ON e.id = d.environment_id
 		  LEFT JOIN observed o ON o.id = s.id
 		 WHERE ($1::bigint IS NULL OR s.database_id = $1)
-		   AND i.account_id = $4
+		   AND i.project_id = ANY($4)
 		 ORDER BY s.observed_at DESC, s.id DESC
-		 LIMIT $2 OFFSET $3`, dbFilter, f.Limit, f.Offset, s.account)
+		 LIMIT $2 OFFSET $3`, dbFilter, f.Limit, f.Offset, s.projects)
 	if err != nil {
 		return nil, fmt.Errorf("read timeline: %w", err)
 	}
@@ -112,8 +112,8 @@ func (s *Scope) Blob(ctx context.Context, fingerprint schema.Version) (*schema.S
 		       SELECT 1 FROM schemaver.snapshot sn
 		         JOIN schemaver.database d ON d.id = sn.database_id
 		         JOIN schemaver.instance i ON i.id = d.instance_id
-		        WHERE sn.fingerprint = b.fingerprint AND i.account_id = $2)`,
-		string(fingerprint), s.account).Scan(&canonical); err != nil {
+		        WHERE sn.fingerprint = b.fingerprint AND i.project_id = ANY($2)`,
+		string(fingerprint), s.projects).Scan(&canonical); err != nil {
 		return nil, fmt.Errorf("load schema %s: %w", fingerprint.Short(), err)
 	}
 	var out schema.Schema
@@ -155,8 +155,8 @@ func (s *Scope) Fleet(ctx context.Context) ([]DatabaseRow, error) {
 		  FROM schemaver.database d
 		  JOIN schemaver.instance i ON i.id = d.instance_id
 		  LEFT JOIN schemaver.environment e ON e.id = d.environment_id
-		 WHERE d.archived_at IS NULL AND i.account_id = $1
-		 ORDER BY i.name, COALESCE(e.rank, 2147483647), d.name`, s.account)
+		 WHERE d.archived_at IS NULL AND i.project_id = ANY($1)
+		 ORDER BY i.name, COALESCE(e.rank, 2147483647), d.name`, s.projects)
 	if err != nil {
 		return nil, fmt.Errorf("read fleet: %w", err)
 	}
@@ -204,8 +204,8 @@ func (s *Scope) Drifts(ctx context.Context, includeResolved bool) ([]DriftRow, e
 		  JOIN schemaver.instance i ON i.id = d.instance_id
 		  LEFT JOIN schemaver.environment e ON e.id = d.environment_id
 		  LEFT JOIN schemaver.database p ON p.id = f.peer_database_id
-		 WHERE ($1::boolean OR f.status = 'open') AND i.account_id = $2
-		 ORDER BY (f.status = 'open') DESC, f.last_seen DESC`, includeResolved, s.account)
+		 WHERE ($1::boolean OR f.status = 'open') AND i.project_id = ANY($2)
+		 ORDER BY (f.status = 'open') DESC, f.last_seen DESC`, includeResolved, s.projects)
 	if err != nil {
 		return nil, fmt.Errorf("read drifts: %w", err)
 	}

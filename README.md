@@ -95,30 +95,39 @@ and dropped there. Managed Postgres offerings that hand you a single database
 cannot host schemaver's metadata — though they are perfectly fine as *targets*
 to observe.
 
-## Accounts
+## Organisations, projects and isolation
 
-An **account** owns database servers, credentials and environments. Users belong
-to an account, and nothing one account owns is reachable from another — enforced
-by a store that cannot express an unscoped query, so a missing filter is not a
-mistake that can be made quietly.
+A **project** owns database servers, credentials and environments. People are
+granted membership of projects, so ownership survives a reorganisation — a
+service outlives the team that built it.
 
-`SCHEMAVER_OPEN_SIGNUP=1` lets anyone create an account. Because accounts are
-isolated, that grants access to nothing already registered.
+Above projects sits an **organisation**. An organisation role reads every project
+and owns none of them: the platform-team and auditor case. Seeing every schema at
+once never comes bundled with the ability to change any of them.
+
+Nothing one organisation owns is reachable from another. That is enforced by a
+store type that cannot express an unscoped query, so a missing filter is not a
+mistake that can be made quietly — the method would have to be written on the
+wrong type first. Membership is checked on every request that names a project; an
+id in a cookie is a claim, and a forged one selects nothing.
+
+`SCHEMAVER_OPEN_SIGNUP=1` lets anyone create an organisation. Because
+organisations are isolated, that grants access to nothing already registered.
 
 It does mean strangers can ask this server to open connections, so with open
 sign-up on, **private and link-local addresses are refused** — including cloud
 instance metadata at `169.254.169.254`, which on some providers hands out the
-host's own credentials. Addresses are judged after resolution, never by
-hostname, since pointing a public name at an internal address is the standard
-way that check is defeated.
+host's own credentials. Addresses are judged after resolution, never by hostname,
+since pointing a public name at an internal address is the standard way that
+check is defeated.
 
-Set `SCHEMAVER_ALLOW_PRIVATE_TARGETS=1` to override, which you will need if you
-run open sign-up and legitimately manage private databases. Doing both at once
-is logged as a warning, because it makes this server a probe of its own network.
+Set `SCHEMAVER_ALLOW_PRIVATE_TARGETS=1` to override, which you need if you run
+open sign-up and legitimately manage private databases. Doing both is logged as a
+warning, because it makes this server a probe of its own network.
 
-With open sign-up off — the default — reaching private addresses is permitted,
-since that is the entire point of a self-hosted deployment, and the first account
-is created with a one-time token printed to the log.
+With open sign-up off — the default — private addresses are permitted, since that
+is the entire point of a self-hosted deployment, and the first organisation is
+created with a one-time token printed to the log.
 
 ## Commands
 

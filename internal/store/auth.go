@@ -44,15 +44,15 @@ func (s *Store) EnsureUser(ctx context.Context, accountID int64, email, displayN
 }
 
 // CreateUser adds an account. The password is hashed before it reaches here.
-func (s *Store) CreateUser(ctx context.Context, accountID int64, email, displayName string, role auth.Role, passwordHash string) (*auth.User, error) {
+func (s *Store) CreateUser(ctx context.Context, organizationID int64, email, displayName string, role auth.Role, passwordHash string) (*auth.User, error) {
 	if !role.Valid() {
 		return nil, fmt.Errorf("unknown role %q", role)
 	}
-	u := &auth.User{Email: email, DisplayName: displayName, Role: role, AccountID: accountID}
+	u := &auth.User{Email: email, DisplayName: displayName, Role: role, OrganizationID: organizationID}
 	err := s.pool.QueryRow(ctx, `
-		INSERT INTO schemaver.app_user (email, display_name, password_hash, role, account_id)
+		INSERT INTO schemaver.app_user (email, display_name, password_hash, role, organization_id)
 		VALUES (lower($1), $2, $3, $4, $5)
-		RETURNING id`, email, displayName, passwordHash, string(role), accountID).Scan(&u.ID)
+		RETURNING id`, email, displayName, passwordHash, string(role), organizationID).Scan(&u.ID)
 	if err != nil {
 		return nil, fmt.Errorf("create user: %w", err)
 	}
@@ -68,13 +68,13 @@ func (s *Store) Authenticate(ctx context.Context, email, password string) (*auth
 	var u auth.User
 	var hash string
 	var disabled *time.Time
-	var role string
+	var role, orgRole string
 
 	err := s.pool.QueryRow(ctx, `
 		SELECT id, email, COALESCE(display_name, ''), password_hash, role,
-		       disabled_at, account_id
+		       disabled_at, organization_id, org_role
 		  FROM schemaver.app_user WHERE email = lower($1)`, email).
-		Scan(&u.ID, &u.Email, &u.DisplayName, &hash, &role, &disabled, &u.AccountID)
+		Scan(&u.ID, &u.Email, &u.DisplayName, &hash, &role, &disabled, &u.OrganizationID, &orgRole)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Hash anyway, so a missing account and a wrong password take
 		// indistinguishable time.
@@ -88,6 +88,7 @@ func (s *Store) Authenticate(ctx context.Context, email, password string) (*auth
 		return nil, auth.ErrBadCredentials
 	}
 	u.Role = auth.Role(role)
+	u.OrgRole = auth.OrgRole(orgRole)
 	return &u, nil
 }
 
@@ -119,18 +120,17 @@ func (s *Store) UserBySession(ctx context.Context, token string) (*auth.User, er
 	hash := auth.HashToken(token)
 
 	var u auth.User
-	var role string
+	var role, orgRole string
 	var disabled *time.Time
+	// Joined rather than assembled from correlated subqueries: one row, one
+	// read, and a column rename cannot leave part of it silently stale.
 	err := s.pool.QueryRow(ctx, `
-		UPDATE schemaver.session SET last_used_at = now()
-		 WHERE token_hash = $1 AND expires_at > now()
-		RETURNING (SELECT id FROM schemaver.app_user WHERE id = user_id),
-		          (SELECT email FROM schemaver.app_user WHERE id = user_id),
-		          (SELECT COALESCE(display_name, '') FROM schemaver.app_user WHERE id = user_id),
-		          (SELECT role FROM schemaver.app_user WHERE id = user_id),
-		          (SELECT disabled_at FROM schemaver.app_user WHERE id = user_id),
-		          (SELECT account_id FROM schemaver.app_user WHERE id = user_id)`,
-		hash).Scan(&u.ID, &u.Email, &u.DisplayName, &role, &disabled, &u.AccountID)
+		UPDATE schemaver.session s SET last_used_at = now()
+		  FROM schemaver.app_user u
+		 WHERE s.token_hash = $1 AND s.expires_at > now() AND u.id = s.user_id
+		RETURNING u.id, u.email, COALESCE(u.display_name, ''), u.role,
+		          u.disabled_at, u.organization_id, u.org_role`,
+		hash).Scan(&u.ID, &u.Email, &u.DisplayName, &role, &disabled, &u.OrganizationID, &orgRole)
 	if errors.Is(err, pgx.ErrNoRows) {
 		_, _ = s.pool.Exec(ctx, `DELETE FROM schemaver.session WHERE token_hash = $1`, hash)
 		return nil, auth.ErrBadCredentials
@@ -142,6 +142,7 @@ func (s *Store) UserBySession(ctx context.Context, token string) (*auth.User, er
 		return nil, auth.ErrBadCredentials
 	}
 	u.Role = auth.Role(role)
+	u.OrgRole = auth.OrgRole(orgRole)
 	return &u, nil
 }
 

@@ -63,6 +63,8 @@ color:#fff;text-decoration:none;font-weight:600;font-size:13px}
 .banner.warn{border-color:var(--mod);color:var(--mod)}
 .banner pre{margin:0;background:transparent;border:0;padding:0;color:inherit}
 .who{color:var(--dim);font-size:12px}
+.switcher{padding:3px 8px;font:inherit;font-size:12px;border-radius:6px;
+background:var(--bg);color:var(--fg);border:1px solid var(--line)}
 </style></head><body>
 <header>
   <b>schemaver</b>
@@ -70,10 +72,27 @@ color:#fff;text-decoration:none;font-weight:600;font-size:13px}
   <a href="/history" {{if eq .Nav "history"}}class="on"{{end}}>History</a>
   <a href="/drift" {{if eq .Nav "drift"}}class="on"{{end}}>Drift</a>
   <a href="/instances" {{if eq .Nav "instances"}}class="on"{{end}}>Servers</a>
+  {{if .Projects}}
+  <form method="post" action="/project" style="display:inline">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <select name="project" onchange="this.form.submit()" class="switcher">
+      {{range .Projects}}
+      <option value="{{.ProjectID}}" {{if eq (printf "%d" .ProjectID) $.CurrentProject}}selected{{end}}>{{.Name}}</option>
+      {{end}}
+      {{if .OrgWide}}
+      <option value="{{.AllProjects}}" {{if eq .AllProjects .CurrentProject}}selected{{end}}>All projects</option>
+      {{end}}
+    </select>
+  </form>
+  {{end}}
   <span class="spacer"></span>
   {{if .User}}<span class="who">{{.User.Email}} · {{.User.Role}}</span>
   <a href="/logout">Sign out</a>{{end}}
 </header>
 
+{{if eq .CurrentProject .AllProjects}}<div style="padding:8px 24px;background:var(--card);
+border-bottom:1px solid var(--line);color:var(--dim);font-size:12px">
+Viewing every project in the organisation. This view is read-only — seeing all
+schemas at once should not come with the ability to change any of them.</div>{{end}}
 <main>{{template "content" .}}</main>
 </body></html>{{end}}
