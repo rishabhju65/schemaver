@@ -57,6 +57,28 @@ Running the control plane (against schemaver's own metadata database):
                                                    without the web setup flow
 `
 
+// controlPlane names the commands that operate on schemaver's own database, and
+// may therefore take its url from the environment.
+var controlPlane = map[string]bool{
+	"run": true, "serve": true, "work": true, "migrate": true,
+	"register": true, "pair": true, "admin": true,
+}
+
+// listenAddr resolves where to listen.
+//
+// PORT is honoured because most hosting platforms assign one and expect the
+// process to use it; a service that ignores it fails its health check and is
+// killed without ever explaining why.
+func listenAddr() string {
+	if addr := os.Getenv("SCHEMAVER_ADDR"); addr != "" {
+		return addr
+	}
+	if port := os.Getenv("PORT"); port != "" {
+		return ":" + port
+	}
+	return ":8080"
+}
+
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintf(os.Stderr, "schemaver: %v\n", err)
@@ -73,10 +95,22 @@ func run(args []string) error {
 		return nil
 	}
 	cmd := args[0]
-	if len(args) < 2 {
+
+	// The metadata url may come from the environment instead of an argument, so
+	// a platform that supplies configuration as environment variables needs no
+	// command arguments at all.
+	url := ""
+	if len(args) > 1 {
+		url = args[1]
+	} else if controlPlane[cmd] {
+		url = os.Getenv("SCHEMAVER_DATABASE_URL")
+	}
+	if url == "" {
+		if controlPlane[cmd] {
+			return fmt.Errorf("%s: needs a url, either as an argument or in SCHEMAVER_DATABASE_URL", cmd)
+		}
 		return fmt.Errorf("%s: needs a url", cmd)
 	}
-	url := args[1]
 
 	switch cmd {
 	case "introspect", "fingerprint", "ddl":
@@ -296,10 +330,7 @@ func runServer(url string) error {
 	if err != nil {
 		return err
 	}
-	addr := os.Getenv("SCHEMAVER_ADDR")
-	if addr == "" {
-		addr = ":8080"
-	}
+	addr := listenAddr()
 	httpServer := &http.Server{
 		Addr:              addr,
 		Handler:           srv.Handler(),
@@ -482,10 +513,7 @@ func runAll(url string) error {
 	if err != nil {
 		return err
 	}
-	addr := os.Getenv("SCHEMAVER_ADDR")
-	if addr == "" {
-		addr = ":8080"
-	}
+	addr := listenAddr()
 	httpServer := &http.Server{Addr: addr, Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second}
 
 	errs := make(chan error, 2)
