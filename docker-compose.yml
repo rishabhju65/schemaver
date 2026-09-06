@@ -13,7 +13,10 @@ services:
       POSTGRES_USER: schemaver
       POSTGRES_DB: schemaver
     ports:
-      - "5432:5432"
+      # Bound to the loopback interface only. Published on 0.0.0.0 this would
+      # expose PostgreSQL to the whole network the host sits on — which on a
+      # public VM means the internet, with the password in this file.
+      - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./deploy/seed.sql:/docker-entrypoint-initdb.d/10-seed.sql:ro

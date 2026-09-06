@@ -1,0 +1,6 @@
+.neon
+.env.local
+
+# Node artifacts from the Neon CLI. schemaver is a Go program; these exist only
+# so `neon config` can run, and node_modules must never be committed.
+node_modules/
