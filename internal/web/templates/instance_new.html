@@ -1,0 +1,53 @@
+{{define "content"}}
+<div class="narrow" style="max-width:560px">
+<h1>Add a server</h1>
+<p class="sub">Reading a schema needs almost nothing. <code>pg_catalog</code> is
+readable by every role, so this account can be created with no privileges beyond
+connecting — it cannot read a single row of your data.</p>
+<pre>CREATE ROLE schemaver LOGIN PASSWORD '...';
+GRANT CONNECT ON DATABASE your_database TO schemaver;</pre>
+
+{{if .Error}}<p class="banner err">{{.Error}}</p>{{end}}
+
+{{with .Preflight}}
+<div class="banner ok">
+  <b>Connection succeeded.</b><br>
+  PostgreSQL {{.ServerVersion}} as <code>{{.User}}</code>{{if .Superuser}} (superuser){{end}}.
+  {{.Reachable}} of {{len .Databases}} databases reachable.
+</div>
+{{if .Unreachable}}
+<div class="banner warn">
+  <b>Not reachable with this role:</b> {{range .Unreachable}}<code>{{.}}</code> {{end}}<br>
+  They will be discovered but not read. To include them:
+  <pre style="margin:8px 0 0">{{range .MissingGrants}}{{.}}
+{{end}}</pre>
+</div>
+{{end}}
+{{end}}
+
+<form method="post" action="/instances/new" class="card pad">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <label>Name<input name="name" value="{{.Form.Name}}" placeholder="orders-prod"></label>
+  <div class="row">
+    <label style="flex:3">Host<input name="host" value="{{.Form.Host}}" required></label>
+    <label style="flex:1">Port<input name="port" value="{{.Form.Port}}" required></label>
+  </div>
+  <label>Role<input name="username" value="{{.Form.Username}}" required></label>
+  <label>Password<input type="password" name="password" value="{{.Form.Password}}" required></label>
+  <label>Database to connect to
+    <input name="database" value="{{.Form.Database}}" placeholder="postgres">
+    <span class="hint">Used only to enumerate the server. Each database is
+    connected to individually afterwards.</span></label>
+  <label>TLS
+    <select name="tls_mode">
+      {{range .TLSModes}}<option value="{{.}}" {{if eq . $.Form.TLSMode}}selected{{end}}>{{.}}</option>{{end}}
+    </select></label>
+  <div class="row">
+    <button type="submit" name="action" value="test" class="secondary">Test connection</button>
+    <button type="submit" name="action" value="register"
+      {{if not .Preflight}}disabled{{end}}>Register</button>
+  </div>
+  {{if not .Preflight}}<span class="hint">Test the connection before registering.</span>{{end}}
+</form>
+</div>
+{{end}}

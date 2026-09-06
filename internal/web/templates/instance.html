@@ -1,0 +1,55 @@
+{{define "content"}}
+<h1>{{.Instance.Name}}</h1>
+<p class="sub"><code>{{.Instance.Host}}:{{.Instance.Port}}</code> as
+<code>{{.Instance.Username}}</code> · {{.Instance.Engine}} ·
+TLS {{.Instance.TLSMode}}</p>
+
+{{if .Error}}<p class="banner err">{{.Error}}</p>{{end}}
+{{if .Saved}}<p class="banner ok">Saved. Managed databases are read on the next
+observation cycle.</p>{{end}}
+
+<form method="post" action="/instances/{{.Instance.ID}}">
+<input type="hidden" name="csrf" value="{{.CSRF}}">
+<div class="card scroll">
+<table>
+<tr><th>Manage</th><th>Database</th><th>Size</th><th>Environment</th>
+<th>Compare against</th><th>State</th></tr>
+{{range .Databases}}
+<tr>
+  <td><input type="checkbox" name="managed" value="{{.ID}}" {{if .Managed}}checked{{end}}
+      {{if not $.CanWrite}}disabled{{end}}></td>
+  <td>{{.Name}}<input type="hidden" name="db" value="{{.ID}}"></td>
+  <td class="fp">{{mb .SizeBytes}}</td>
+  <td>
+    <select name="env-{{.ID}}" {{if not $.CanWrite}}disabled{{end}}>
+      <option value="">—</option>
+      {{$cur := .EnvironmentID}}
+      {{range $.Environments}}
+      <option value="{{.ID}}" {{if eq64 $cur .ID}}selected{{end}}>{{.Name}}</option>
+      {{end}}
+    </select>
+  </td>
+  <td>
+    <select name="peer-{{.ID}}" {{if not $.CanWrite}}disabled{{end}}>
+      <option value="">—</option>
+      {{$self := .ID}}{{$peer := .PeerID}}
+      {{range $.Databases}}{{if ne .ID $self}}
+      <option value="{{.ID}}" {{if eq64 $peer .ID}}selected{{end}}>{{.Name}}</option>
+      {{end}}{{end}}
+    </select>
+  </td>
+  <td>{{if .LastError}}<span class="err">unreachable</span>
+      {{else if .Managed}}<span class="added">observed</span>
+      {{else}}<span class="fp">not managed</span>{{end}}</td>
+</tr>
+{{else}}
+<tr><td colspan="6" class="empty">No databases discovered.</td></tr>
+{{end}}
+</table>
+</div>
+{{if .CanWrite}}<p style="margin-top:16px"><button type="submit">Save</button></p>{{end}}
+</form>
+<p class="sub" style="margin-top:14px">Comparing a database against another
+makes drift detection work with no repository connected at all — the difference
+between two live databases is already an answer most teams do not have.</p>
+{{end}}

@@ -38,6 +38,15 @@ type Server struct {
 // funcs are the helpers templates use to render values a person can read.
 var funcs = template.FuncMap{
 	"short": func(v schema.Version) string { return v.Short() },
+	"mb": func(b int64) string {
+		if b <= 0 {
+			return "—"
+		}
+		return fmt.Sprintf("%.1f MB", float64(b)/(1024*1024))
+	},
+	// eq64 compares an optional selection against a candidate id, for marking
+	// the chosen option in a select.
+	"eq64":  func(a *int64, b int64) bool { return a != nil && *a == b },
 	"stamp": func(t time.Time) string { return t.Local().Format("2006-01-02 15:04:05") },
 	// ago renders staleness rather than hiding it: a view that shows only "last
 	// read" without its age presents stale data as current.
@@ -68,7 +77,8 @@ func New(s *store.Store, setup *auth.Setup, demo bool) (*Server, error) {
 		setup = auth.Completed()
 	}
 	srv := &Server{store: s, tmpl: map[string]*template.Template{}, setup: setup, demo: demo}
-	for _, page := range []string{"fleet", "history", "change", "drift", "login", "setup"} {
+	for _, page := range []string{"fleet", "history", "change", "drift", "login", "setup",
+		"instances", "instance_new", "instance"} {
 		t, err := template.New("layout").Funcs(funcs).ParseFS(files,
 			"templates/layout.html", "templates/"+page+".html")
 		if err != nil {
@@ -93,6 +103,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /database/{id}", s.requireUser(s.database))
 	mux.HandleFunc("GET /change/{id}", s.requireUser(s.change))
 	mux.HandleFunc("GET /drift", s.requireUser(s.drift))
+	mux.HandleFunc("GET /instances", s.requireUser(s.instances))
+	mux.HandleFunc("GET /instances/{id}", s.requireUser(s.instanceDetail))
+
+	// Registering a server stores a credential, so these need an account that
+	// may write — a demo Viewer must never reach them.
+	mux.HandleFunc("GET /instances/new", s.requireWriter(s.instanceNew))
+	mux.HandleFunc("POST /instances/new", s.requireWriter(s.instanceNew))
+	mux.HandleFunc("POST /instances/{id}", s.requireUser(s.instanceDetail))
 
 	mux.HandleFunc("GET /login", s.login)
 	mux.HandleFunc("POST /login", s.login)
@@ -128,7 +146,9 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, page, title, nav
 func (s *Server) renderWith(w http.ResponseWriter, r *http.Request, page, title, nav string, data map[string]any) {
 	data["Title"], data["Nav"] = title, nav
 	data["Demo"] = s.demo
-	data["User"] = userFrom(r.Context())
+	user := userFrom(r.Context())
+	data["User"] = user
+	data["CanWrite"] = user != nil && user.Role.CanWrite()
 	if c, err := r.Cookie(sessionCookie); err == nil {
 		data["CSRF"] = csrfToken(c.Value)
 	}

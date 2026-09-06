@@ -1,0 +1,25 @@
+{{define "content"}}
+<h1>Servers</h1>
+<p class="sub">PostgreSQL servers schemaver observes. Registering one discovers
+its databases; managing them is a separate, deliberate choice.</p>
+{{if .CanWrite}}<p><a class="btn" href="/instances/new">Add a server</a></p>{{end}}
+<div class="card scroll">
+<table>
+<tr><th>Name</th><th>Endpoint</th><th>Role</th><th>TLS</th>
+<th>Databases</th><th>Managed</th><th>Last checked</th></tr>
+{{range .Rows}}
+<tr>
+  <td><a href="/instances/{{.ID}}">{{.Name}}</a></td>
+  <td class="fp">{{.Host}}:{{.Port}}</td>
+  <td class="fp">{{.Username}}</td>
+  <td><span class="tag">{{.TLSMode}}</span></td>
+  <td>{{.Databases}}</td>
+  <td>{{if .Managed}}{{.Managed}}{{else}}<span class="fp">none</span>{{end}}</td>
+  <td class="fp">{{ago .LastSeen}}</td>
+</tr>
+{{else}}
+<tr><td colspan="7" class="empty">No servers registered yet.</td></tr>
+{{end}}
+</table>
+</div>
+{{end}}

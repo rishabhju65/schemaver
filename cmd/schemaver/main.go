@@ -281,9 +281,13 @@ func runServer(url string) error {
 	defer pool.Close()
 
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	// The interface reads state; it never opens a credential, so no encryption
-	// key is required to run it.
-	st := store.New(pool, nil)
+	// The interface registers servers, which seals a credential, so it needs the
+	// encryption key as much as the worker does.
+	box, err := secret.FromEnv()
+	if err != nil {
+		return err
+	}
+	st := store.New(pool, box)
 	setup, demo, err := initAuth(ctx, st, log)
 	if err != nil {
 		return err

@@ -155,3 +155,80 @@ func TestCSRFRejectsMissingAndWrongTokens(t *testing.T) {
 		t.Error("the correct form token was rejected")
 	}
 }
+
+// TestWriteRoutesRequireAnAccount covers the surface that stores credentials.
+// Reaching it without an account must never be possible.
+func TestWriteRoutesRequireAnAccount(t *testing.T) {
+	h := server(t, auth.Completed(), false).Handler()
+	for _, tc := range []struct{ method, path string }{
+		{http.MethodGet, "/instances"},
+		{http.MethodGet, "/instances/new"},
+		{http.MethodPost, "/instances/new"},
+		{http.MethodGet, "/instances/1"},
+		{http.MethodPost, "/instances/1"},
+	} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(tc.method, tc.path, nil))
+		if loc := rec.Header().Get("Location"); loc != "/login" {
+			t.Errorf("%s %s: redirected to %q, want /login", tc.method, tc.path, loc)
+		}
+	}
+}
+
+// TestConnectErrorsAreActionable checks a failed connection names what to change.
+// A generic "connection failed" costs a support round-trip every time.
+func TestConnectErrorsAreActionable(t *testing.T) {
+	for _, tc := range []struct {
+		raw  string
+		want string
+	}{
+		{"password authentication failed for user \"x\"", "rejected these credentials"},
+		{"dial tcp: lookup db.example: no such host", "could not be resolved"},
+		{"dial tcp 10.0.0.1:5432: connection refused", "refused the connection"},
+		{"dial tcp 10.0.0.1:5432: i/o timeout", "firewall or security group"},
+		{"server does not support SSL, but SSL was required", "TLS negotiation failed"},
+		{`database "nope" does not exist`, "pick a database that exists"},
+	} {
+		got := describeConnectError("db.example", errString(tc.raw)).Error()
+		if !containsAll(got, tc.want) {
+			t.Errorf("%q\n  got:  %s\n  want it to mention: %s", tc.raw, got, tc.want)
+		}
+	}
+}
+
+type errString string
+
+func (e errString) Error() string { return string(e) }
+
+func TestFormBuildsConnectionURL(t *testing.T) {
+	f := connectionForm{
+		Host: "db.internal", Port: "5433", Username: "schemaver",
+		Password: "p@ss word/1", Database: "postgres", TLSMode: "verify-full",
+	}
+	dsn, port, err := f.dsn()
+	if err != nil {
+		t.Fatalf("dsn: %v", err)
+	}
+	if port != 5433 {
+		t.Errorf("port: got %d, want 5433", port)
+	}
+	for _, want := range []string{"db.internal:5433", "sslmode=verify-full", "connect_timeout=10"} {
+		if !containsAll(dsn, want) {
+			t.Errorf("dsn missing %q: %s", want, dsn)
+		}
+	}
+	// A password with reserved characters must survive as credentials rather
+	// than corrupting the URL.
+	if containsAll(dsn, "p@ss word/1") {
+		t.Errorf("password was not escaped: %s", dsn)
+	}
+}
+
+func TestFormRejectsBadPort(t *testing.T) {
+	for _, p := range []string{"0", "70000", "abc", "-1"} {
+		f := connectionForm{Host: "h", Port: p, Username: "u", Database: "d", TLSMode: "require"}
+		if _, _, err := f.dsn(); err == nil {
+			t.Errorf("port %q was accepted", p)
+		}
+	}
+}
