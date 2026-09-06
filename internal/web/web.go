@@ -131,6 +131,7 @@ func (s *Server) renderAuth(w http.ResponseWriter, r *http.Request, page, title 
 		"MinPassword":  auth.MinPasswordLength,
 		"DemoEmail":    DemoEmail,
 		"DemoPassword": DemoPassword,
+		"SetupPending": s.setup.Pending(),
 	}
 	if cause != nil {
 		data["Error"] = cause.Error()

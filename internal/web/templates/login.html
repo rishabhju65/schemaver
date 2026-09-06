@@ -14,5 +14,9 @@ This account is read-only — it cannot register a database or store a credentia
     value="{{if .Demo}}{{.DemoPassword}}{{end}}"></label>
   <button type="submit">Sign in</button>
 </form>
+{{if .SetupPending}}
+<p class="sub" style="margin-top:14px">No administrator has been created yet.
+<a href="/setup">Create one</a> with the setup token from the server log.</p>
+{{end}}
 </div>
 {{end}}

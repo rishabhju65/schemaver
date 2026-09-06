@@ -51,21 +51,34 @@ func TestPagesRequireAnAccount(t *testing.T) {
 	}
 }
 
-// TestSetupDivertsEverything checks a deployment with no administrator sends
-// visitors to setup rather than to a sign-in page no account can pass.
-func TestSetupDivertsEverything(t *testing.T) {
+// TestSetupDivertsVisitorsButNotSignIn checks a deployment with no administrator
+// sends visitors to setup — while leaving sign-in reachable.
+//
+// Accounts can exist before an administrator does: demo mode seeds a read-only
+// one. Diverting /login too would make such an account impossible to use, which
+// is precisely the deployment demo mode exists for.
+func TestSetupDivertsVisitorsButNotSignIn(t *testing.T) {
 	pending, err := auth.NewSetup()
 	if err != nil {
 		t.Fatalf("NewSetup: %v", err)
 	}
 	h := server(t, pending, false).Handler()
 
-	for _, path := range []string{"/", "/history", "/login"} {
+	for _, path := range []string{"/", "/history", "/drift", "/instances"} {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
 		if loc := rec.Header().Get("Location"); loc != "/setup" {
 			t.Errorf("%s: redirected to %q, want /setup", path, loc)
 		}
+	}
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/login", nil))
+	if rec.Code != http.StatusOK {
+		t.Errorf("/login: got %d, want 200 — an existing account must still be able to sign in", rec.Code)
+	}
+	if !containsAll(rec.Body.String(), "/setup") {
+		t.Error("/login does not offer a route to setup while one is pending")
 	}
 }
 

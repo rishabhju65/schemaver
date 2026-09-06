@@ -79,17 +79,23 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 }
 
 // requireUser admits any signed-in account.
+//
+// A signed-in account is admitted even while setup is pending. Accounts can
+// exist before an administrator does — demo mode seeds a read-only one — and
+// there is no reason to bar a valid session from the application merely because
+// nobody has claimed the administrator role yet. Only a visitor with no session
+// is sent to setup, and only when there is a setup to complete.
 func (s *Server) requireUser(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if userFrom(r.Context()) != nil {
+			h(w, r)
+			return
+		}
 		if s.setup.Pending() {
 			http.Redirect(w, r, "/setup", http.StatusSeeOther)
 			return
 		}
-		if userFrom(r.Context()) == nil {
-			http.Redirect(w, r, "/login", http.StatusSeeOther)
-			return
-		}
-		h(w, r)
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
 	}
 }
 
@@ -149,10 +155,9 @@ func clearSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
-	if s.setup.Pending() {
-		http.Redirect(w, r, "/setup", http.StatusSeeOther)
-		return
-	}
+	// Sign-in stays open while setup is pending: an account may already exist
+	// without an administrator, and redirecting here would make such an account
+	// unusable. Creating the first administrator is still gated by the token.
 	if r.Method == http.MethodGet {
 		s.renderAuth(w, r, "login", "Sign in", nil)
 		return
