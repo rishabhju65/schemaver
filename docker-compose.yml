@@ -1,0 +1,41 @@
+# Local schemaver: the application, its metadata database, and a few target
+# databases to watch.
+#
+# One Postgres serves all three roles. That is not a shortcut — schemaver needs
+# CREATEDB on its own instance for shadow databases (D-009), so it must have a
+# server it administers, and that same server can host demo targets.
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_PASSWORD: schemaver
+      POSTGRES_USER: schemaver
+      POSTGRES_DB: schemaver
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./deploy/seed.sql:/docker-entrypoint-initdb.d/10-seed.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U schemaver"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  schemaver:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Local only. In a real deployment this comes from the environment and is
+      # backed up: losing it makes every stored credential unrecoverable.
+      SCHEMAVER_ENCRYPTION_KEY: "c2NoZW1hdmVyLWxvY2FsLWRldmVsb3BtZW50LWtleTA="
+      SCHEMAVER_ADDR: ":8080"
+    command: ["run", "postgres://schemaver:schemaver@postgres:5432/schemaver?sslmode=disable"]
+    ports:
+      - "8080:8080"
+
+volumes:
+  pgdata:
