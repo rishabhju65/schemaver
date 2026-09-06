@@ -113,6 +113,18 @@ func (s *Server) requireWriter(h http.HandlerFunc) http.HandlerFunc {
 	})
 }
 
+// isSecure reports whether the request reached us over TLS, including when a
+// reverse proxy terminated it.
+//
+// Trusting X-Forwarded-Proto here is safe in the direction that matters. Marking
+// a cookie Secure when the connection is actually plain HTTP only stops the
+// browser sending it — an inconvenience. Failing to mark it when the connection
+// *is* HTTPS is what leaks a session, so erring towards Secure is the correct
+// bias, and a forged header only restricts the forger's own cookie.
+func isSecure(r *http.Request) bool {
+	return r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"
+}
+
 func setSession(w http.ResponseWriter, r *http.Request, token string) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookie,
@@ -123,7 +135,7 @@ func setSession(w http.ResponseWriter, r *http.Request, token string) {
 		// arrive from a link someone pasted in chat, which is how these pages
 		// are actually shared.
 		SameSite: http.SameSiteLaxMode,
-		Secure:   r.TLS != nil,
+		Secure:   isSecure(r),
 		MaxAge:   int(auth.SessionLifetime.Seconds()),
 	})
 }
@@ -132,7 +144,7 @@ func clearSession(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
 		Name: sessionCookie, Value: "", Path: "/",
 		HttpOnly: true, SameSite: http.SameSiteLaxMode,
-		Secure: r.TLS != nil, MaxAge: -1,
+		Secure: isSecure(r), MaxAge: -1,
 	})
 }
 
