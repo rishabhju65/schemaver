@@ -6,11 +6,12 @@ import (
 	"testing"
 
 	"github.com/rishabhju65/schemaver/internal/auth"
+	"github.com/rishabhju65/schemaver/internal/netguard"
 )
 
-func server(t *testing.T, setup *auth.Setup, demo bool) *Server {
+func server(t *testing.T, setup *auth.Setup, openSignup bool) *Server {
 	t.Helper()
-	s, err := New(nil, setup, demo)
+	s, err := New(nil, setup, openSignup, netguard.Policy{})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -22,7 +23,8 @@ func server(t *testing.T, setup *auth.Setup, demo bool) *Server {
 // down the whole interface.
 func TestTemplatesParse(t *testing.T) {
 	s := server(t, auth.Completed(), false)
-	for _, page := range []string{"fleet", "history", "change", "drift", "login", "setup"} {
+	for _, page := range []string{"fleet", "history", "change", "drift", "login", "signup",
+		"instances", "instance_new", "instance"} {
 		if s.tmpl[page] == nil {
 			t.Errorf("%s template missing", page)
 		}
@@ -57,7 +59,7 @@ func TestPagesRequireAnAccount(t *testing.T) {
 // Accounts can exist before an administrator does: demo mode seeds a read-only
 // one. Diverting /login too would make such an account impossible to use, which
 // is precisely the deployment demo mode exists for.
-func TestSetupDivertsVisitorsButNotSignIn(t *testing.T) {
+func TestNoAccountsDivertsToSignIn(t *testing.T) {
 	pending, err := auth.NewSetup()
 	if err != nil {
 		t.Fatalf("NewSetup: %v", err)
@@ -67,8 +69,8 @@ func TestSetupDivertsVisitorsButNotSignIn(t *testing.T) {
 	for _, path := range []string{"/", "/history", "/drift", "/instances"} {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
-		if loc := rec.Header().Get("Location"); loc != "/setup" {
-			t.Errorf("%s: redirected to %q, want /setup", path, loc)
+		if loc := rec.Header().Get("Location"); loc != "/login" {
+			t.Errorf("%s: redirected to %q, want /login", path, loc)
 		}
 	}
 
@@ -77,8 +79,8 @@ func TestSetupDivertsVisitorsButNotSignIn(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Errorf("/login: got %d, want 200 — an existing account must still be able to sign in", rec.Code)
 	}
-	if !containsAll(rec.Body.String(), "/setup") {
-		t.Error("/login does not offer a route to setup while one is pending")
+	if !containsAll(rec.Body.String(), "/signup") {
+		t.Error("/login does not offer a route to sign-up while no account exists")
 	}
 }
 
@@ -93,22 +95,40 @@ func TestHealthzIsPublic(t *testing.T) {
 	}
 }
 
-// TestLoginPageAdvertisesDemoOnlyInDemoMode guards against a build accidentally
-// publishing a password.
-func TestLoginPageAdvertisesDemoOnlyInDemoMode(t *testing.T) {
+// TestSignUpOfferedOnlyWhenOpen checks a closed deployment does not invite
+// strangers to create accounts.
+func TestSignUpOfferedOnlyWhenOpen(t *testing.T) {
 	for _, tc := range []struct {
-		demo        bool
-		wantVisible bool
+		open      bool
+		wantOffer bool
 	}{{false, false}, {true, true}} {
 		rec := httptest.NewRecorder()
-		server(t, auth.Completed(), tc.demo).Handler().
+		server(t, auth.Completed(), tc.open).Handler().
 			ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/login", nil))
 
-		shown := rec.Body.Len() > 0 &&
-			containsAll(rec.Body.String(), DemoEmail, DemoPassword)
-		if shown != tc.wantVisible {
-			t.Errorf("demo=%v: credentials visible=%v, want %v", tc.demo, shown, tc.wantVisible)
+		offered := containsAll(rec.Body.String(), `href="/signup"`)
+		if offered != tc.wantOffer {
+			t.Errorf("openSignup=%v: sign-up offered=%v, want %v", tc.open, offered, tc.wantOffer)
 		}
+	}
+}
+
+// TestClosedDeploymentRefusesSignUpOnceSetUp checks the account door closes
+// behind the first account when sign-up is not open.
+func TestClosedDeploymentRefusesSignUpOnceSetUp(t *testing.T) {
+	rec := httptest.NewRecorder()
+	server(t, auth.Completed(), false).Handler().
+		ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/signup", nil))
+	if loc := rec.Header().Get("Location"); loc != "/login" {
+		t.Errorf("closed deployment offered sign-up; redirected to %q, want /login", loc)
+	}
+
+	pending, _ := auth.NewSetup()
+	rec = httptest.NewRecorder()
+	server(t, pending, false).Handler().
+		ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/signup", nil))
+	if rec.Code != http.StatusOK {
+		t.Errorf("the first account could not be created: got %d", rec.Code)
 	}
 }
 

@@ -1,21 +1,32 @@
 {{define "content"}}
 <div class="narrow">
-<h1>Create the first account</h1>
-<p class="sub">This deployment has no accounts yet. The setup token was written
-to the server log when the process started — it exists only in memory, so
-restarting issues a new one.</p>
+<h1>Create an account</h1>
+<p class="sub">An account owns its own database servers. Nothing you register
+here is visible to any other account, and nothing already registered is visible
+to you.</p>
+{{if .NeedsToken}}
+<p class="banner warn">This deployment is closed to new accounts. Creating the
+first one needs the setup token written to the server log at startup — it exists
+only in memory, so restarting issues a new one.</p>
+{{end}}
 {{if .Error}}<p class="banner err">{{.Error}}</p>{{end}}
-<form method="post" action="/setup" class="card pad">
-  <label>Setup token<input type="text" name="token" required autofocus
-    autocomplete="off" spellcheck="false"></label>
-  <label>Email<input type="email" name="email" required></label>
+<form method="post" action="/signup" class="card pad">
+  {{if .NeedsToken}}
+  <label>Setup token<input type="text" name="token" required autocomplete="off"
+    spellcheck="false"></label>
+  {{end}}
+  <label>Account name<input name="account" placeholder="Your team">
+    <span class="hint">What to call this workspace. Defaults to your email.</span></label>
+  <label>Email<input type="email" name="email" required autofocus></label>
   <label>Name<input type="text" name="display_name"></label>
   <label>Password<input type="password" name="password" required
     minlength="{{.MinPassword}}">
     <span class="hint">At least {{.MinPassword}} characters. Length is the only
     rule — composition requirements push people towards predictable
     substitutions without making guessing harder.</span></label>
-  <button type="submit">Create administrator</button>
+  <button type="submit">Create account</button>
 </form>
+<p class="sub" style="margin-top:14px">Already have one?
+<a href="/login">Sign in</a>.</p>
 </div>
 {{end}}

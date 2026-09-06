@@ -36,6 +36,11 @@ services:
       # backed up: losing it makes every stored credential unrecoverable.
       SCHEMAVER_ENCRYPTION_KEY: "c2NoZW1hdmVyLWxvY2FsLWRldmVsb3BtZW50LWtleTA="
       SCHEMAVER_ADDR: ":8080"
+      # Anyone may create an account. Accounts are isolated from one another.
+      SCHEMAVER_OPEN_SIGNUP: "1"
+      # Local demo: the seeded target databases are on a private address, so the
+      # guard has to be told this deployment is trusted despite open sign-up.
+      SCHEMAVER_ALLOW_PRIVATE_TARGETS: "1"
     command: ["run", "postgres://schemaver:schemaver@postgres:5432/schemaver?sslmode=disable"]
     ports:
       - "8080:8080"

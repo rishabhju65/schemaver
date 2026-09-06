@@ -27,7 +27,7 @@ func (s *Store) CountAdmins(ctx context.Context) (int, error) {
 
 // EnsureUser creates an account only if its email is not already taken, and
 // reports whether it made one.
-func (s *Store) EnsureUser(ctx context.Context, email, displayName string, role auth.Role, passwordHash string) (bool, error) {
+func (s *Store) EnsureUser(ctx context.Context, accountID int64, email, displayName string, role auth.Role, passwordHash string) (bool, error) {
 	var exists bool
 	if err := s.pool.QueryRow(ctx,
 		`SELECT EXISTS (SELECT 1 FROM schemaver.app_user WHERE email = lower($1))`,
@@ -37,22 +37,22 @@ func (s *Store) EnsureUser(ctx context.Context, email, displayName string, role 
 	if exists {
 		return false, nil
 	}
-	if _, err := s.CreateUser(ctx, email, displayName, role, passwordHash); err != nil {
+	if _, err := s.CreateUser(ctx, accountID, email, displayName, role, passwordHash); err != nil {
 		return false, err
 	}
 	return true, nil
 }
 
 // CreateUser adds an account. The password is hashed before it reaches here.
-func (s *Store) CreateUser(ctx context.Context, email, displayName string, role auth.Role, passwordHash string) (*auth.User, error) {
+func (s *Store) CreateUser(ctx context.Context, accountID int64, email, displayName string, role auth.Role, passwordHash string) (*auth.User, error) {
 	if !role.Valid() {
 		return nil, fmt.Errorf("unknown role %q", role)
 	}
-	u := &auth.User{Email: email, DisplayName: displayName, Role: role}
+	u := &auth.User{Email: email, DisplayName: displayName, Role: role, AccountID: accountID}
 	err := s.pool.QueryRow(ctx, `
-		INSERT INTO schemaver.app_user (email, display_name, password_hash, role)
-		VALUES (lower($1), $2, $3, $4)
-		RETURNING id`, email, displayName, passwordHash, string(role)).Scan(&u.ID)
+		INSERT INTO schemaver.app_user (email, display_name, password_hash, role, account_id)
+		VALUES (lower($1), $2, $3, $4, $5)
+		RETURNING id`, email, displayName, passwordHash, string(role), accountID).Scan(&u.ID)
 	if err != nil {
 		return nil, fmt.Errorf("create user: %w", err)
 	}
@@ -71,9 +71,10 @@ func (s *Store) Authenticate(ctx context.Context, email, password string) (*auth
 	var role string
 
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, email, COALESCE(display_name, ''), password_hash, role, disabled_at
+		SELECT id, email, COALESCE(display_name, ''), password_hash, role,
+		       disabled_at, account_id
 		  FROM schemaver.app_user WHERE email = lower($1)`, email).
-		Scan(&u.ID, &u.Email, &u.DisplayName, &hash, &role, &disabled)
+		Scan(&u.ID, &u.Email, &u.DisplayName, &hash, &role, &disabled, &u.AccountID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Hash anyway, so a missing account and a wrong password take
 		// indistinguishable time.
@@ -127,8 +128,9 @@ func (s *Store) UserBySession(ctx context.Context, token string) (*auth.User, er
 		          (SELECT email FROM schemaver.app_user WHERE id = user_id),
 		          (SELECT COALESCE(display_name, '') FROM schemaver.app_user WHERE id = user_id),
 		          (SELECT role FROM schemaver.app_user WHERE id = user_id),
-		          (SELECT disabled_at FROM schemaver.app_user WHERE id = user_id)`,
-		hash).Scan(&u.ID, &u.Email, &u.DisplayName, &role, &disabled)
+		          (SELECT disabled_at FROM schemaver.app_user WHERE id = user_id),
+		          (SELECT account_id FROM schemaver.app_user WHERE id = user_id)`,
+		hash).Scan(&u.ID, &u.Email, &u.DisplayName, &role, &disabled, &u.AccountID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		_, _ = s.pool.Exec(ctx, `DELETE FROM schemaver.session WHERE token_hash = $1`, hash)
 		return nil, auth.ErrBadCredentials

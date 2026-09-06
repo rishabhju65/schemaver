@@ -15,16 +15,6 @@ import (
 // sessionCookie is the name of the cookie carrying the session token.
 const sessionCookie = "schemaver_session"
 
-// Demo account credentials, used only when demo mode is switched on.
-//
-// The account is a Viewer, so publishing its password gives a stranger the
-// ability to read the demo and nothing else — it cannot register a database or
-// store a credential. That is what makes advertising it defensible.
-const (
-	DemoEmail    = "demo@schemaver.local"
-	DemoPassword = "demo-read-only-account"
-)
-
 type ctxKey int
 
 const userKey ctxKey = iota
@@ -91,10 +81,6 @@ func (s *Server) requireUser(h http.HandlerFunc) http.HandlerFunc {
 			h(w, r)
 			return
 		}
-		if s.setup.Pending() {
-			http.Redirect(w, r, "/setup", http.StatusSeeOther)
-			return
-		}
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 	}
 }
@@ -155,9 +141,6 @@ func clearSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
-	// Sign-in stays open while setup is pending: an account may already exist
-	// without an administrator, and redirecting here would make such an account
-	// unusable. Creating the first administrator is still gated by the token.
 	if r.Method == http.MethodGet {
 		s.renderAuth(w, r, "login", "Sign in", nil)
 		return
@@ -190,18 +173,38 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/login", http.StatusSeeOther)
 }
 
-// setupHandler creates the first account, gated by the one-time token.
-func (s *Server) setupHandler(w http.ResponseWriter, r *http.Request) {
-	if !s.setup.Pending() {
+// signupHandler creates an account and its first administrator.
+//
+// Accounts are isolated from one another, so this is not privileged: creating
+// one grants access to nothing that already exists. When open sign-up is off it
+// is gated by the one-time setup token, which is how a closed deployment gets
+// its first account without exposing registration to anyone who finds the URL.
+func (s *Server) signupHandler(w http.ResponseWriter, r *http.Request) {
+	needsToken := !s.openSignup && s.setup.Pending()
+	if !s.openSignup && !s.setup.Pending() {
+		// Closed, and already set up: there is no route to a new account.
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
+
+	data := map[string]any{"NeedsToken": needsToken}
 	if r.Method == http.MethodGet {
-		s.renderAuth(w, r, "setup", "Set up", nil)
+		s.renderAuthWith(w, r, "signup", "Create an account", nil, data)
 		return
 	}
 
-	fail := func(err error) { s.renderAuth(w, r, "setup", "Set up", err) }
+	fail := func(err error) { s.renderAuthWith(w, r, "signup", "Create an account", err, data) }
+
+	email := strings.TrimSpace(r.FormValue("email"))
+	taken, err := s.store.EmailTaken(r.Context(), email)
+	if err != nil {
+		fail(err)
+		return
+	}
+	if taken {
+		fail(errors.New("that email address is already registered"))
+		return
+	}
 
 	hash, err := auth.HashPassword(r.FormValue("password"))
 	if err != nil {
@@ -210,17 +213,24 @@ func (s *Server) setupHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	// The token is consumed only once everything else has been accepted, so a
 	// rejected password does not burn it and strand the operator.
-	if err := s.setup.Consume(strings.TrimSpace(r.FormValue("token"))); err != nil {
-		fail(err)
-		return
+	if needsToken {
+		if err := s.setup.Consume(strings.TrimSpace(r.FormValue("token"))); err != nil {
+			fail(err)
+			return
+		}
 	}
-	user, err := s.store.CreateUser(r.Context(),
-		strings.TrimSpace(r.FormValue("email")),
-		strings.TrimSpace(r.FormValue("display_name")), auth.Admin, hash)
+
+	accountName := strings.TrimSpace(r.FormValue("account"))
+	if accountName == "" {
+		accountName = email
+	}
+	_, user, err := s.store.CreateAccount(r.Context(), accountName, email,
+		strings.TrimSpace(r.FormValue("display_name")), hash)
 	if err != nil {
 		fail(err)
 		return
 	}
+
 	token, _, err := s.store.StartSession(r.Context(), user.ID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

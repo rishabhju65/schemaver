@@ -37,9 +37,13 @@ services:
       - key: SCHEMAVER_ENCRYPTION_KEY
         sync: false
 
-      # Advertises a read-only account on the sign-in page so a visitor can look
-      # around without your logs. The account is a viewer: it can read every
-      # schema and divergence but cannot register a database or store a
-      # credential. Remove this key entirely for a real deployment.
-      - key: SCHEMAVER_DEMO_MODE
+      # Anyone may create an account. Accounts are isolated: a new one sees no
+      # server, database or divergence belonging to another.
+      #
+      # It also means strangers can ask this server to open connections, so with
+      # this on, private and link-local addresses are refused — including cloud
+      # instance metadata at 169.254.169.254. Remove this key for a closed
+      # deployment, where the first account is created with a one-time token
+      # printed to the log.
+      - key: SCHEMAVER_OPEN_SIGNUP
         value: "1"

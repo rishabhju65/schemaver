@@ -47,7 +47,7 @@ type TimelineFilter struct {
 //
 // The previous fingerprint is computed over successful reads only, so a failed
 // observation does not break the chain between the changes either side of it.
-func (s *Store) Timeline(ctx context.Context, f TimelineFilter) ([]TimelineEntry, error) {
+func (s *Scope) Timeline(ctx context.Context, f TimelineFilter) ([]TimelineEntry, error) {
 	if f.Limit <= 0 || f.Limit > 500 {
 		f.Limit = 100
 	}
@@ -56,7 +56,7 @@ func (s *Store) Timeline(ctx context.Context, f TimelineFilter) ([]TimelineEntry
 		dbFilter = &f.DatabaseID
 	}
 
-	rows, err := s.pool.Query(ctx, `
+	rows, err := s.store.pool.Query(ctx, `
 		WITH observed AS (
 		    SELECT s.id,
 		           LAG(s.fingerprint) OVER (
@@ -74,8 +74,9 @@ func (s *Store) Timeline(ctx context.Context, f TimelineFilter) ([]TimelineEntry
 		  LEFT JOIN schemaver.environment e ON e.id = d.environment_id
 		  LEFT JOIN observed o ON o.id = s.id
 		 WHERE ($1::bigint IS NULL OR s.database_id = $1)
+		   AND i.account_id = $4
 		 ORDER BY s.observed_at DESC, s.id DESC
-		 LIMIT $2 OFFSET $3`, dbFilter, f.Limit, f.Offset)
+		 LIMIT $2 OFFSET $3`, dbFilter, f.Limit, f.Offset, s.account)
 	if err != nil {
 		return nil, fmt.Errorf("read timeline: %w", err)
 	}
@@ -96,14 +97,23 @@ func (s *Store) Timeline(ctx context.Context, f TimelineFilter) ([]TimelineEntry
 }
 
 // Blob loads a stored schema by its fingerprint.
-func (s *Store) Blob(ctx context.Context, fingerprint schema.Version) (*schema.Schema, error) {
+func (s *Scope) Blob(ctx context.Context, fingerprint schema.Version) (*schema.Schema, error) {
 	if fingerprint == "" {
 		return nil, nil
 	}
+	// Reachable only through this account's own observations. A fingerprint is
+	// unguessable, but scoping the lookup means the guarantee does not rest on
+	// that.
 	var canonical []byte
-	if err := s.pool.QueryRow(ctx,
-		`SELECT canonical FROM schemaver.schema_blob WHERE fingerprint = $1`,
-		string(fingerprint)).Scan(&canonical); err != nil {
+	if err := s.store.pool.QueryRow(ctx, `
+		SELECT b.canonical FROM schemaver.schema_blob b
+		 WHERE b.fingerprint = $1
+		   AND EXISTS (
+		       SELECT 1 FROM schemaver.snapshot sn
+		         JOIN schemaver.database d ON d.id = sn.database_id
+		         JOIN schemaver.instance i ON i.id = d.instance_id
+		        WHERE sn.fingerprint = b.fingerprint AND i.account_id = $2)`,
+		string(fingerprint), s.account).Scan(&canonical); err != nil {
 		return nil, fmt.Errorf("load schema %s: %w", fingerprint.Short(), err)
 	}
 	var out schema.Schema
@@ -133,8 +143,8 @@ type DatabaseRow struct {
 // Staleness is left for the caller to judge from LastReadAt rather than being
 // reduced to a boolean here: how old is too old depends on the polling interval,
 // and a view that hides the age would present stale data as current.
-func (s *Store) Fleet(ctx context.Context) ([]DatabaseRow, error) {
-	rows, err := s.pool.Query(ctx, `
+func (s *Scope) Fleet(ctx context.Context) ([]DatabaseRow, error) {
+	rows, err := s.store.pool.Query(ctx, `
 		SELECT d.id, d.name, i.name, COALESCE(e.name, ''), d.managed,
 		       COALESCE(d.current_fingerprint, ''),
 		       d.last_checked_at, d.last_read_at, COALESCE(d.last_error, ''),
@@ -145,8 +155,8 @@ func (s *Store) Fleet(ctx context.Context) ([]DatabaseRow, error) {
 		  FROM schemaver.database d
 		  JOIN schemaver.instance i ON i.id = d.instance_id
 		  LEFT JOIN schemaver.environment e ON e.id = d.environment_id
-		 WHERE d.archived_at IS NULL
-		 ORDER BY i.name, COALESCE(e.rank, 2147483647), d.name`)
+		 WHERE d.archived_at IS NULL AND i.account_id = $1
+		 ORDER BY i.name, COALESCE(e.rank, 2147483647), d.name`, s.account)
 	if err != nil {
 		return nil, fmt.Errorf("read fleet: %w", err)
 	}
@@ -183,8 +193,8 @@ type DriftRow struct {
 }
 
 // Drifts lists divergences, open ones first.
-func (s *Store) Drifts(ctx context.Context, includeResolved bool) ([]DriftRow, error) {
-	rows, err := s.pool.Query(ctx, `
+func (s *Scope) Drifts(ctx context.Context, includeResolved bool) ([]DriftRow, error) {
+	rows, err := s.store.pool.Query(ctx, `
 		SELECT f.id, d.name, i.name, COALESCE(e.name, ''),
 		       f.observed_fingerprint, f.expected_fingerprint,
 		       f.expected_source, COALESCE(p.name, ''),
@@ -194,8 +204,8 @@ func (s *Store) Drifts(ctx context.Context, includeResolved bool) ([]DriftRow, e
 		  JOIN schemaver.instance i ON i.id = d.instance_id
 		  LEFT JOIN schemaver.environment e ON e.id = d.environment_id
 		  LEFT JOIN schemaver.database p ON p.id = f.peer_database_id
-		 WHERE $1::boolean OR f.status = 'open'
-		 ORDER BY (f.status = 'open') DESC, f.last_seen DESC`, includeResolved)
+		 WHERE ($1::boolean OR f.status = 'open') AND i.account_id = $2
+		 ORDER BY (f.status = 'open') DESC, f.last_seen DESC`, includeResolved, s.account)
 	if err != nil {
 		return nil, fmt.Errorf("read drifts: %w", err)
 	}

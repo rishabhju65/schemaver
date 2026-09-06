@@ -74,9 +74,6 @@ color:#fff;text-decoration:none;font-weight:600;font-size:13px}
   {{if .User}}<span class="who">{{.User.Email}} · {{.User.Role}}</span>
   <a href="/logout">Sign out</a>{{end}}
 </header>
-{{if .Demo}}<div style="padding:8px 24px;background:var(--card);
-border-bottom:1px solid var(--line);color:var(--mod);font-size:12px">
-<b>Demo mode</b> — this deployment advertises a read-only account publicly.
-Do not connect a real database to it.</div>{{end}}
+
 <main>{{template "content" .}}</main>
 </body></html>{{end}}

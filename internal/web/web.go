@@ -18,6 +18,7 @@ import (
 
 	"github.com/rishabhju65/schemaver/internal/auth"
 	"github.com/rishabhju65/schemaver/internal/history"
+	"github.com/rishabhju65/schemaver/internal/netguard"
 	"github.com/rishabhju65/schemaver/internal/schema"
 	"github.com/rishabhju65/schemaver/internal/store"
 )
@@ -30,9 +31,15 @@ type Server struct {
 	store *store.Store
 	tmpl  map[string]*template.Template
 	setup *auth.Setup
-	// demo advertises a read-only account on the sign-in page. It is opt-in and
-	// loudly indicated, because it publishes a password on purpose.
-	demo bool
+	// openSignup lets anyone create an account. Accounts are isolated, so this
+	// grants access to nothing that already exists — but it does mean strangers
+	// can ask this server to connect somewhere, which is why the address guard
+	// is not optional when it is on.
+	openSignup bool
+	// targets decides which addresses a registration may point at. With open
+	// sign-up this is the only thing standing between a stranger and a scan of
+	// whatever network this server sits in.
+	targets netguard.Policy
 }
 
 // funcs are the helpers templates use to render values a person can read.
@@ -72,12 +79,13 @@ var funcs = template.FuncMap{
 //
 // setup carries the one-time bootstrap token; pass auth.Completed() for a
 // deployment that already has accounts.
-func New(s *store.Store, setup *auth.Setup, demo bool) (*Server, error) {
+func New(s *store.Store, setup *auth.Setup, openSignup bool, targets netguard.Policy) (*Server, error) {
 	if setup == nil {
 		setup = auth.Completed()
 	}
-	srv := &Server{store: s, tmpl: map[string]*template.Template{}, setup: setup, demo: demo}
-	for _, page := range []string{"fleet", "history", "change", "drift", "login", "setup",
+	srv := &Server{store: s, tmpl: map[string]*template.Template{},
+		setup: setup, openSignup: openSignup, targets: targets}
+	for _, page := range []string{"fleet", "history", "change", "drift", "login", "signup",
 		"instances", "instance_new", "instance"} {
 		t, err := template.New("layout").Funcs(funcs).ParseFS(files,
 			"templates/layout.html", "templates/"+page+".html")
@@ -115,8 +123,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /login", s.login)
 	mux.HandleFunc("POST /login", s.login)
 	mux.HandleFunc("GET /logout", s.logout)
-	mux.HandleFunc("GET /setup", s.setupHandler)
-	mux.HandleFunc("POST /setup", s.setupHandler)
+	mux.HandleFunc("GET /signup", s.signupHandler)
+	mux.HandleFunc("POST /signup", s.signupHandler)
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -125,13 +133,34 @@ func (s *Server) Handler() http.Handler {
 	return s.authenticate(mux)
 }
 
-// renderAuth draws the sign-in and setup pages, which have no account attached.
+// scoped returns a store bound to the signed-in user's account.
+//
+// Every handler that reads or writes account data goes through this. The
+// unscoped store is not reachable from a request handler by design: isolation is
+// a property of which type a method lives on, not of remembering to filter.
+func (s *Server) scoped(r *http.Request) *store.Scope {
+	u := userFrom(r.Context())
+	if u == nil {
+		// Unreachable: every caller sits behind requireUser. Binding to an
+		// impossible account rather than panicking means a routing mistake
+		// returns nothing instead of everything.
+		return s.store.For(-1)
+	}
+	return s.store.For(u.AccountID)
+}
+
+// renderAuth draws the sign-in and sign-up pages, which have no account attached.
 func (s *Server) renderAuth(w http.ResponseWriter, r *http.Request, page, title string, cause error) {
+	s.renderAuthWith(w, r, page, title, cause, nil)
+}
+
+func (s *Server) renderAuthWith(w http.ResponseWriter, r *http.Request, page, title string, cause error, extra map[string]any) {
 	data := map[string]any{
-		"MinPassword":  auth.MinPasswordLength,
-		"DemoEmail":    DemoEmail,
-		"DemoPassword": DemoPassword,
-		"SetupPending": s.setup.Pending(),
+		"MinPassword": auth.MinPasswordLength,
+		"CanSignUp":   s.openSignup || s.setup.Pending(),
+	}
+	for k, v := range extra {
+		data[k] = v
 	}
 	if cause != nil {
 		data["Error"] = cause.Error()
@@ -146,7 +175,6 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, page, title, nav
 
 func (s *Server) renderWith(w http.ResponseWriter, r *http.Request, page, title, nav string, data map[string]any) {
 	data["Title"], data["Nav"] = title, nav
-	data["Demo"] = s.demo
 	user := userFrom(r.Context())
 	data["User"] = user
 	data["CanWrite"] = user != nil && user.Role.CanWrite()
@@ -162,7 +190,7 @@ func (s *Server) renderWith(w http.ResponseWriter, r *http.Request, page, title,
 }
 
 func (s *Server) fleet(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.store.Fleet(r.Context())
+	rows, err := s.scoped(r).Fleet(r.Context())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -171,7 +199,7 @@ func (s *Server) fleet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) history(w http.ResponseWriter, r *http.Request) {
-	entries, err := s.store.Timeline(r.Context(), store.TimelineFilter{Limit: 200})
+	entries, err := s.scoped(r).Timeline(r.Context(), store.TimelineFilter{Limit: 200})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -186,7 +214,7 @@ func (s *Server) database(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not a database id", http.StatusBadRequest)
 		return
 	}
-	entries, err := s.store.Timeline(r.Context(),
+	entries, err := s.scoped(r).Timeline(r.Context(),
 		store.TimelineFilter{DatabaseID: id, Limit: 200})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -207,7 +235,7 @@ func (s *Server) change(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not a snapshot id", http.StatusBadRequest)
 		return
 	}
-	entries, err := s.store.Timeline(r.Context(), store.TimelineFilter{Limit: 500})
+	entries, err := s.scoped(r).Timeline(r.Context(), store.TimelineFilter{Limit: 500})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -224,12 +252,12 @@ func (s *Server) change(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	before, err := s.store.Blob(r.Context(), entry.From)
+	before, err := s.scoped(r).Blob(r.Context(), entry.From)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	after, err := s.store.Blob(r.Context(), entry.To)
+	after, err := s.scoped(r).Blob(r.Context(), entry.To)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -244,7 +272,7 @@ func (s *Server) change(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) drift(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.store.Drifts(r.Context(), r.URL.Query().Get("all") == "1")
+	rows, err := s.scoped(r).Drifts(r.Context(), r.URL.Query().Get("all") == "1")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

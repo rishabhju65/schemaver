@@ -21,8 +21,8 @@ type InstanceRow struct {
 }
 
 // Instances lists registered servers.
-func (s *Store) Instances(ctx context.Context) ([]InstanceRow, error) {
-	rows, err := s.pool.Query(ctx, `
+func (s *Scope) Instances(ctx context.Context) ([]InstanceRow, error) {
+	rows, err := s.store.pool.Query(ctx, `
 		SELECT i.id, i.name, i.host, i.port, i.tls_mode, c.username, i.engine,
 		       (SELECT count(*) FROM schemaver.database d
 		         WHERE d.instance_id = i.id AND d.archived_at IS NULL),
@@ -32,8 +32,8 @@ func (s *Store) Instances(ctx context.Context) ([]InstanceRow, error) {
 		         WHERE d.instance_id = i.id)
 		  FROM schemaver.instance i
 		  JOIN schemaver.credential c ON c.id = i.credential_id
-		 WHERE i.archived_at IS NULL
-		 ORDER BY i.name`)
+		 WHERE i.archived_at IS NULL AND i.account_id = $1
+		 ORDER BY i.name`, s.account)
 	if err != nil {
 		return nil, fmt.Errorf("list instances: %w", err)
 	}
@@ -63,25 +63,26 @@ type ManagedDatabase struct {
 }
 
 // InstanceDetail returns one instance and every database discovered on it.
-func (s *Store) InstanceDetail(ctx context.Context, id int64) (*InstanceRow, []ManagedDatabase, error) {
+func (s *Scope) InstanceDetail(ctx context.Context, id int64) (*InstanceRow, []ManagedDatabase, error) {
 	var inst InstanceRow
-	err := s.pool.QueryRow(ctx, `
+	err := s.store.pool.QueryRow(ctx, `
 		SELECT i.id, i.name, i.host, i.port, i.tls_mode, c.username, i.engine
 		  FROM schemaver.instance i
 		  JOIN schemaver.credential c ON c.id = i.credential_id
-		 WHERE i.id = $1 AND i.archived_at IS NULL`, id).
+		 WHERE i.id = $1 AND i.archived_at IS NULL AND i.account_id = $2`, id, s.account).
 		Scan(&inst.ID, &inst.Name, &inst.Host, &inst.Port, &inst.TLSMode,
 			&inst.Username, &inst.Engine)
 	if err != nil {
 		return nil, nil, fmt.Errorf("load instance %d: %w", id, err)
 	}
 
-	rows, err := s.pool.Query(ctx, `
+	rows, err := s.store.pool.Query(ctx, `
 		SELECT id, name, managed, environment_id, expected_peer_id,
 		       COALESCE(size_bytes, 0), COALESCE(last_error, '')
 		  FROM schemaver.database
 		 WHERE instance_id = $1 AND archived_at IS NULL
-		 ORDER BY name`, id)
+		   AND instance_id IN (SELECT id FROM schemaver.instance WHERE account_id = $2)
+		 ORDER BY name`, id, s.account)
 	if err != nil {
 		return nil, nil, fmt.Errorf("list databases: %w", err)
 	}
@@ -107,9 +108,10 @@ type EnvironmentRow struct {
 }
 
 // Environments lists tiers in promotion order.
-func (s *Store) Environments(ctx context.Context) ([]EnvironmentRow, error) {
-	rows, err := s.pool.Query(ctx,
-		`SELECT id, name, rank FROM schemaver.environment ORDER BY rank`)
+func (s *Scope) Environments(ctx context.Context) ([]EnvironmentRow, error) {
+	rows, err := s.store.pool.Query(ctx,
+		`SELECT id, name, rank FROM schemaver.environment
+		  WHERE account_id = $1 ORDER BY rank`, s.account)
 	if err != nil {
 		return nil, fmt.Errorf("list environments: %w", err)
 	}
@@ -138,8 +140,8 @@ type DatabaseSettings struct {
 //
 // Applied in one transaction so a partly-saved form cannot leave half the
 // databases observed and half not.
-func (s *Store) ApplyDatabaseSettings(ctx context.Context, instanceID int64, settings []DatabaseSettings) error {
-	tx, err := s.pool.Begin(ctx)
+func (s *Scope) ApplyDatabaseSettings(ctx context.Context, instanceID int64, settings []DatabaseSettings) error {
+	tx, err := s.store.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin: %w", err)
 	}
@@ -155,8 +157,10 @@ func (s *Store) ApplyDatabaseSettings(ctx context.Context, instanceID int64, set
 		if _, err := tx.Exec(ctx, `
 			UPDATE schemaver.database
 			   SET managed = $2, environment_id = $3, expected_peer_id = $4
-			 WHERE id = $1 AND instance_id = $5`,
-			set.ID, set.Managed, set.EnvironmentID, set.PeerID, instanceID); err != nil {
+			 WHERE id = $1 AND instance_id = $5
+			   AND instance_id IN (SELECT id FROM schemaver.instance WHERE account_id = $6)`,
+			set.ID, set.Managed, set.EnvironmentID, set.PeerID, instanceID,
+			s.account); err != nil {
 			return fmt.Errorf("save settings for database %d: %w", set.ID, err)
 		}
 	}

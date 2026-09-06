@@ -13,7 +13,6 @@ import (
 	neturl "net/url"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -23,6 +22,7 @@ import (
 	"github.com/rishabhju65/schemaver/internal/auth"
 	"github.com/rishabhju65/schemaver/internal/introspect"
 	"github.com/rishabhju65/schemaver/internal/migrate"
+	"github.com/rishabhju65/schemaver/internal/netguard"
 	"github.com/rishabhju65/schemaver/internal/render"
 	"github.com/rishabhju65/schemaver/internal/schema"
 	"github.com/rishabhju65/schemaver/internal/secret"
@@ -42,26 +42,19 @@ Reading a target database (needs only CONNECT):
 
 Running the control plane (against schemaver's own metadata database):
   schemaver migrate  <metadata-url>                 Apply schemaver's own schema
-  schemaver register <metadata-url> <target-url> [name]
-                                                   Register a server and manage
-                                                   every database on it
-  schemaver pair     <metadata-url> <instance-id> <database> <peer>
-                                                   Compare one database against
-                                                   another, for drift
   schemaver run      <metadata-url>                Observation loop and web
                                                    interface together
   schemaver work     <metadata-url>                Observation loop only
   schemaver serve    <metadata-url>                Web interface only
-  schemaver admin    <metadata-url> <email> <password> [name]
-                                                   Create an administrator
-                                                   without the web setup flow
+  schemaver account  <metadata-url> <name> <email> <password>
+                                                   Create an account and its
+                                                   administrator
 `
 
 // controlPlane names the commands that operate on schemaver's own database, and
 // may therefore take its url from the environment.
 var controlPlane = map[string]bool{
-	"run": true, "serve": true, "work": true, "migrate": true,
-	"register": true, "pair": true, "admin": true,
+	"run": true, "serve": true, "work": true, "migrate": true, "account": true,
 }
 
 // listenAddr resolves where to listen.
@@ -125,29 +118,6 @@ func run(args []string) error {
 		return runServer(url)
 	case "run":
 		return runAll(url)
-	case "register":
-		if len(args) < 3 {
-			return fmt.Errorf("register: needs a target url")
-		}
-		name := ""
-		if len(args) > 3 {
-			name = args[3]
-		}
-		return runRegister(url, args[2], name)
-	case "admin":
-		if len(args) < 4 {
-			return fmt.Errorf("admin: needs an email and a password")
-		}
-		name := ""
-		if len(args) > 4 {
-			name = args[4]
-		}
-		return runAdmin(url, args[2], args[3], name)
-	case "pair":
-		if len(args) < 5 {
-			return fmt.Errorf("pair: needs an instance id, a database and a peer")
-		}
-		return runPair(url, args[2], args[3], args[4])
 	default:
 		fmt.Print(usage)
 		return fmt.Errorf("unknown command %q", cmd)
@@ -258,39 +228,51 @@ func runMigrate(url string) error {
 	return nil
 }
 
-// demoModeEnabled reports whether this deployment advertises a public read-only
-// account. Opt-in only: it publishes a password on purpose.
-func demoModeEnabled() bool {
-	v := strings.ToLower(os.Getenv("SCHEMAVER_DEMO_MODE"))
+// openSignupEnabled reports whether anyone may create an account.
+//
+// It also decides whether this deployment may connect to private addresses: a
+// server strangers can register targets on must not be usable as a probe of the
+// network it sits in. Overriding that is possible but deliberate.
+func openSignupEnabled() bool {
+	v := strings.ToLower(os.Getenv("SCHEMAVER_OPEN_SIGNUP"))
 	return v == "1" || v == "true" || v == "yes"
 }
 
-// initAuth decides whether the deployment still needs its first administrator,
-// and seeds the demo account when demo mode is on.
-func initAuth(ctx context.Context, st *store.Store, log *slog.Logger) (*auth.Setup, bool, error) {
-	demo := demoModeEnabled()
-	if demo {
-		hash, err := auth.HashPassword(web.DemoPassword)
-		if err != nil {
-			return nil, false, err
-		}
-		created, err := st.EnsureUser(ctx, web.DemoEmail, "Demo (read-only)", auth.Viewer, hash)
-		if err != nil {
-			return nil, false, err
-		}
-		if created {
-			log.Warn("demo mode: seeded a public read-only account",
-				"email", web.DemoEmail)
-		}
-		log.Warn("DEMO MODE IS ON — a read-only account is advertised on the sign-in page; do not connect a real database")
+// targetPolicy decides which addresses this deployment may connect to.
+func targetPolicy(log *slog.Logger) netguard.Policy {
+	override := strings.ToLower(os.Getenv("SCHEMAVER_ALLOW_PRIVATE_TARGETS"))
+	explicit := override == "1" || override == "true" || override == "yes"
+
+	if !openSignupEnabled() {
+		// Closed to strangers: reaching a private database is the entire point
+		// of a self-hosted deployment (D-005).
+		return netguard.Policy{AllowPrivate: true}
 	}
+	if explicit {
+		log.Warn("open sign-up is on AND private targets are permitted — " +
+			"anyone who registers can make this server probe its own network")
+		return netguard.Policy{AllowPrivate: true}
+	}
+	log.Info("open sign-up is on; connections to private and link-local addresses are refused")
+	return netguard.Policy{}
+}
+
+// initAuth decides whether this deployment still needs its first account.
+func initAuth(ctx context.Context, st *store.Store, log *slog.Logger) (*auth.Setup, bool, error) {
+	open := openSignupEnabled()
 
 	admins, err := st.CountAdmins(ctx)
 	if err != nil {
 		return nil, false, err
 	}
 	if admins > 0 {
-		return auth.Completed(), demo, nil
+		return auth.Completed(), open, nil
+	}
+	if open {
+		// Anyone may sign up, so gating the first account behind a token would
+		// protect nothing.
+		log.Info("no accounts yet; open sign-up is on, so visit /signup to create one")
+		return auth.Completed(), true, nil
 	}
 
 	setup, err := auth.NewSetup()
@@ -299,9 +281,9 @@ func initAuth(ctx context.Context, st *store.Store, log *slog.Logger) (*auth.Set
 	}
 	// Printed rather than stored: the token lives only in this process, so a
 	// restart invalidates it and there is nothing on disk to leak.
-	log.Warn("no administrator exists — visit /setup with this one-time token",
+	log.Warn("no accounts exist — visit /signup with this one-time token",
 		"token", setup.Token())
-	return setup, demo, nil
+	return setup, false, nil
 }
 
 func runServer(url string) error {
@@ -322,11 +304,11 @@ func runServer(url string) error {
 		return err
 	}
 	st := store.New(pool, box)
-	setup, demo, err := initAuth(ctx, st, log)
+	setup, open, err := initAuth(ctx, st, log)
 	if err != nil {
 		return err
 	}
-	srv, err := web.New(st, setup, demo)
+	srv, err := web.New(st, setup, open, targetPolicy(log))
 	if err != nil {
 		return err
 	}
@@ -364,69 +346,7 @@ func sslMode(raw string) string {
 	return "prefer"
 }
 
-func runRegister(metadataURL, targetURL, name string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-
-	cfg, err := pgx.ParseConfig(targetURL)
-	if err != nil {
-		return fmt.Errorf("parse target url: %w", err)
-	}
-	if name == "" {
-		name = fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
-	}
-
-	pool, err := metadataPool(ctx, metadataURL)
-	if err != nil {
-		return err
-	}
-	defer pool.Close()
-
-	box, err := secret.FromEnv()
-	if err != nil {
-		return err
-	}
-	st := store.New(pool, box)
-
-	// Prove the credentials work before storing them: a registration that looks
-	// successful and then fails on every observation is worse than a refusal.
-	probe, err := pgx.Connect(ctx, targetURL)
-	if err != nil {
-		return fmt.Errorf("cannot reach the target: %w", err)
-	}
-	found, err := introspect.Databases(ctx, probe)
-	probe.Close(context.Background())
-	if err != nil {
-		return fmt.Errorf("cannot list databases (does the role have CONNECT?): %w", err)
-	}
-
-	instanceID, err := st.RegisterInstance(ctx, name, cfg.Host, int(cfg.Port),
-		sslMode(targetURL), cfg.User, cfg.Password)
-	if err != nil {
-		return err
-	}
-	added, _, err := st.SyncDatabases(ctx, instanceID, found)
-	if err != nil {
-		return err
-	}
-	managed, err := st.SetManaged(ctx, instanceID, nil)
-	if err != nil {
-		return err
-	}
-
-	fmt.Printf("registered %s as instance %d\n", name, instanceID)
-	fmt.Printf("discovered %d databases, now managing %d\n", added, managed)
-	for _, d := range found {
-		mark := " "
-		if !d.Connectable {
-			mark = "!"
-		}
-		fmt.Printf("  %s %-28s %8.1f MB\n", mark, d.Name, float64(d.SizeBytes)/(1024*1024))
-	}
-	return nil
-}
-
-func runAdmin(metadataURL, email, password, name string) error {
+func runAccount(metadataURL, accountName, email, password string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 
@@ -440,41 +360,13 @@ func runAdmin(metadataURL, email, password, name string) error {
 	}
 	defer pool.Close()
 
-	user, err := store.New(pool, nil).CreateUser(ctx, email, name, auth.Admin, hash)
+	account, user, err := store.New(pool, nil).CreateAccount(ctx, accountName, email, "", hash)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("created administrator %s (id %d)\n", user.Email, user.ID)
-	return nil
-}
-
-func runPair(metadataURL, instanceArg, database, peer string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
-
-	instanceID, err := strconv.ParseInt(instanceArg, 10, 64)
-	if err != nil {
-		return fmt.Errorf("instance id must be a number: %w", err)
-	}
-	pool, err := metadataPool(ctx, metadataURL)
-	if err != nil {
-		return err
-	}
-	defer pool.Close()
-	st := store.New(pool, nil)
-
-	dbID, err := st.DatabaseIDByName(ctx, instanceID, database)
-	if err != nil {
-		return err
-	}
-	peerID, err := st.DatabaseIDByName(ctx, instanceID, peer)
-	if err != nil {
-		return err
-	}
-	if err := st.PairForDrift(ctx, dbID, peerID); err != nil {
-		return err
-	}
-	fmt.Printf("%s will be compared against %s\n", database, peer)
+	fmt.Printf("created account %q (id %d) with administrator %s\n",
+		account.Name, account.ID, user.Email)
+	fmt.Println("register database servers from the web interface")
 	return nil
 }
 
@@ -505,11 +397,11 @@ func runAll(url string) error {
 	st := store.New(pool, box)
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
-	setup, demo, err := initAuth(ctx, st, log)
+	setup, open, err := initAuth(ctx, st, log)
 	if err != nil {
 		return err
 	}
-	srv, err := web.New(st, setup, demo)
+	srv, err := web.New(st, setup, open, targetPolicy(log))
 	if err != nil {
 		return err
 	}

@@ -43,13 +43,18 @@ func (r Role) CanWrite() bool { return r == Admin || r == Operator }
 // CanManageUsers reports whether the role may create or modify accounts.
 func (r Role) CanManageUsers() bool { return r == Admin }
 
-// User is an account.
+// User is a person who may sign in.
 type User struct {
 	ID          int64
 	Email       string
 	DisplayName string
 	Role        Role
 	Disabled    bool
+
+	// AccountID is the tenant this user belongs to. Everything the user can
+	// reach is scoped to it, so it is carried on the session rather than looked
+	// up per request.
+	AccountID int64
 }
 
 // SessionLifetime is how long a session stays valid without use.

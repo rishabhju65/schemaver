@@ -88,7 +88,7 @@ func describeConnectError(host string, err error) error {
 }
 
 func (s *Server) instances(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.store.Instances(r.Context())
+	rows, err := s.scoped(r).Instances(r.Context())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -125,6 +125,15 @@ func (s *Server) instanceNew(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 
+	// Judged before dialling, and judged on the resolved address rather than the
+	// name. Without this, the connection test is a port scanner pointed at
+	// whatever network this server can reach — and the errors below report
+	// precisely which failure occurred, which is what makes it an efficient one.
+	if err := s.targets.Check(ctx, nil, form.Host); err != nil {
+		s.render(w, r, "instance_new", "Add a server", "instances", data(form, nil, err))
+		return
+	}
+
 	conn, err := pgx.Connect(ctx, dsn)
 	if err != nil {
 		s.render(w, r, "instance_new", "Add a server", "instances",
@@ -147,7 +156,7 @@ func (s *Server) instanceNew(w http.ResponseWriter, r *http.Request) {
 	if name == "" {
 		name = fmt.Sprintf("%s:%d", form.Host, port)
 	}
-	id, err := s.store.RegisterInstance(ctx, name, form.Host, port,
+	id, err := s.scoped(r).RegisterInstance(ctx, name, form.Host, port,
 		form.TLSMode, form.Username, form.Password)
 	if err != nil {
 		s.render(w, r, "instance_new", "Add a server", "instances", data(form, pre, err))
@@ -189,12 +198,12 @@ func (s *Server) instanceDetail(w http.ResponseWriter, r *http.Request) {
 		saved = saveErr == nil
 	}
 
-	inst, dbs, err := s.store.InstanceDetail(r.Context(), id)
+	inst, dbs, err := s.scoped(r).InstanceDetail(r.Context(), id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
-	envs, err := s.store.Environments(r.Context())
+	envs, err := s.scoped(r).Environments(r.Context())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -236,7 +245,7 @@ func (s *Server) saveInstanceSettings(r *http.Request, instanceID int64) error {
 			PeerID:        optionalID(r.FormValue(fmt.Sprintf("peer-%d", id))),
 		})
 	}
-	return s.store.ApplyDatabaseSettings(r.Context(), instanceID, settings)
+	return s.scoped(r).ApplyDatabaseSettings(r.Context(), instanceID, settings)
 }
 
 // optionalID parses a select value that may be the empty "no choice" option.
