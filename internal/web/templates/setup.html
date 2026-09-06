@@ -1,0 +1,21 @@
+{{define "content"}}
+<div class="narrow">
+<h1>Create the first account</h1>
+<p class="sub">This deployment has no accounts yet. The setup token was written
+to the server log when the process started — it exists only in memory, so
+restarting issues a new one.</p>
+{{if .Error}}<p class="banner err">{{.Error}}</p>{{end}}
+<form method="post" action="/setup" class="card pad">
+  <label>Setup token<input type="text" name="token" required autofocus
+    autocomplete="off" spellcheck="false"></label>
+  <label>Email<input type="email" name="email" required></label>
+  <label>Name<input type="text" name="display_name"></label>
+  <label>Password<input type="password" name="password" required
+    minlength="{{.MinPassword}}">
+    <span class="hint">At least {{.MinPassword}} characters. Length is the only
+    rule — composition requirements push people towards predictable
+    substitutions without making guessing harder.</span></label>
+  <button type="submit">Create administrator</button>
+</form>
+</div>
+{{end}}

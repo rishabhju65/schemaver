@@ -63,10 +63,24 @@ GRANT CONNECT ON DATABASE app TO schemaver;
 
 ## Before deploying this anywhere public
 
-**There is no authentication.** The `app_user` and `session` tables exist and
-nothing uses them yet, so anyone who can reach the port can see every database,
-schema and divergence you have registered. Put it behind something, or keep it on
-a private network.
+**The first account is created with a one-time token.** On a fresh deployment
+with no administrator, schemaver prints a setup token to its log and every page
+redirects to `/setup` until it is used. The token lives only in memory, so
+restarting issues a new one and there is nothing on disk to leak.
+
+```sh
+docker compose logs schemaver | grep token=
+```
+
+Prefer to skip the web flow entirely:
+
+```sh
+schemaver admin <metadata-url> you@example.com 'a-long-enough-password' 'Your Name'
+```
+
+Every page carrying schema information requires an account. Three roles: `admin`
+manages accounts and instances, `operator` registers instances, `viewer` reads
+only.
 
 **Back up the encryption key.** `SCHEMAVER_ENCRYPTION_KEY` encrypts stored
 credentials and is never written to the database. Lose it and every stored
@@ -81,6 +95,17 @@ and dropped there. Managed Postgres offerings that hand you a single database
 cannot host schemaver's metadata — though they are perfectly fine as *targets*
 to observe.
 
+## Demo mode
+
+`SCHEMAVER_DEMO_MODE=1` seeds a read-only account and advertises its credentials
+on the sign-in page, so a public demo needs no log access to get in. The account
+is a **viewer**: it can read every schema and divergence but cannot register a
+database or store a credential, so an exposed demo cannot be turned into a
+credential-harvesting page. Every page carries a banner while it is on.
+
+Off by default, and it publishes a password on purpose — never enable it on a
+deployment connected to anything real.
+
 ## Commands
 
 ```
@@ -94,6 +119,7 @@ schemaver run      <metadata-url>    Observation loop and interface
 schemaver register <metadata-url> <target-url> [name]
 schemaver pair     <metadata-url> <instance-id> <database> <peer>
 schemaver migrate  <metadata-url>    Apply schemaver's own schema
+schemaver admin    <metadata-url> <email> <password> [name]
 ```
 
 ## Design

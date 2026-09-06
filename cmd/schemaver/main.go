@@ -14,11 +14,13 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/rishabhju65/schemaver/internal/auth"
 	"github.com/rishabhju65/schemaver/internal/introspect"
 	"github.com/rishabhju65/schemaver/internal/migrate"
 	"github.com/rishabhju65/schemaver/internal/render"
@@ -50,6 +52,9 @@ Running the control plane (against schemaver's own metadata database):
                                                    interface together
   schemaver work     <metadata-url>                Observation loop only
   schemaver serve    <metadata-url>                Web interface only
+  schemaver admin    <metadata-url> <email> <password> [name]
+                                                   Create an administrator
+                                                   without the web setup flow
 `
 
 func main() {
@@ -95,6 +100,15 @@ func run(args []string) error {
 			name = args[3]
 		}
 		return runRegister(url, args[2], name)
+	case "admin":
+		if len(args) < 4 {
+			return fmt.Errorf("admin: needs an email and a password")
+		}
+		name := ""
+		if len(args) > 4 {
+			name = args[4]
+		}
+		return runAdmin(url, args[2], args[3], name)
 	case "pair":
 		if len(args) < 5 {
 			return fmt.Errorf("pair: needs an instance id, a database and a peer")
@@ -210,6 +224,52 @@ func runMigrate(url string) error {
 	return nil
 }
 
+// demoModeEnabled reports whether this deployment advertises a public read-only
+// account. Opt-in only: it publishes a password on purpose.
+func demoModeEnabled() bool {
+	v := strings.ToLower(os.Getenv("SCHEMAVER_DEMO_MODE"))
+	return v == "1" || v == "true" || v == "yes"
+}
+
+// initAuth decides whether the deployment still needs its first administrator,
+// and seeds the demo account when demo mode is on.
+func initAuth(ctx context.Context, st *store.Store, log *slog.Logger) (*auth.Setup, bool, error) {
+	demo := demoModeEnabled()
+	if demo {
+		hash, err := auth.HashPassword(web.DemoPassword)
+		if err != nil {
+			return nil, false, err
+		}
+		created, err := st.EnsureUser(ctx, web.DemoEmail, "Demo (read-only)", auth.Viewer, hash)
+		if err != nil {
+			return nil, false, err
+		}
+		if created {
+			log.Warn("demo mode: seeded a public read-only account",
+				"email", web.DemoEmail)
+		}
+		log.Warn("DEMO MODE IS ON — a read-only account is advertised on the sign-in page; do not connect a real database")
+	}
+
+	admins, err := st.CountAdmins(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	if admins > 0 {
+		return auth.Completed(), demo, nil
+	}
+
+	setup, err := auth.NewSetup()
+	if err != nil {
+		return nil, false, err
+	}
+	// Printed rather than stored: the token lives only in this process, so a
+	// restart invalidates it and there is nothing on disk to leak.
+	log.Warn("no administrator exists — visit /setup with this one-time token",
+		"token", setup.Token())
+	return setup, demo, nil
+}
+
 func runServer(url string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -220,9 +280,15 @@ func runServer(url string) error {
 	}
 	defer pool.Close()
 
+	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	// The interface reads state; it never opens a credential, so no encryption
 	// key is required to run it.
-	srv, err := web.New(store.New(pool, nil))
+	st := store.New(pool, nil)
+	setup, demo, err := initAuth(ctx, st, log)
+	if err != nil {
+		return err
+	}
+	srv, err := web.New(st, setup, demo)
 	if err != nil {
 		return err
 	}
@@ -325,6 +391,28 @@ func runRegister(metadataURL, targetURL, name string) error {
 	return nil
 }
 
+func runAdmin(metadataURL, email, password, name string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+
+	hash, err := auth.HashPassword(password)
+	if err != nil {
+		return err
+	}
+	pool, err := metadataPool(ctx, metadataURL)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+
+	user, err := store.New(pool, nil).CreateUser(ctx, email, name, auth.Admin, hash)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("created administrator %s (id %d)\n", user.Email, user.ID)
+	return nil
+}
+
 func runPair(metadataURL, instanceArg, database, peer string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
@@ -382,7 +470,11 @@ func runAll(url string) error {
 	st := store.New(pool, box)
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
-	srv, err := web.New(st)
+	setup, demo, err := initAuth(ctx, st, log)
+	if err != nil {
+		return err
+	}
+	srv, err := web.New(st, setup, demo)
 	if err != nil {
 		return err
 	}

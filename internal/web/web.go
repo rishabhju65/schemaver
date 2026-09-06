@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/rishabhju65/schemaver/internal/auth"
 	"github.com/rishabhju65/schemaver/internal/history"
 	"github.com/rishabhju65/schemaver/internal/schema"
 	"github.com/rishabhju65/schemaver/internal/store"
@@ -28,6 +29,10 @@ var files embed.FS
 type Server struct {
 	store *store.Store
 	tmpl  map[string]*template.Template
+	setup *auth.Setup
+	// demo advertises a read-only account on the sign-in page. It is opt-in and
+	// loudly indicated, because it publishes a password on purpose.
+	demo bool
 }
 
 // funcs are the helpers templates use to render values a person can read.
@@ -55,9 +60,15 @@ var funcs = template.FuncMap{
 }
 
 // New parses the templates and wires the routes.
-func New(s *store.Store) (*Server, error) {
-	srv := &Server{store: s, tmpl: map[string]*template.Template{}}
-	for _, page := range []string{"fleet", "history", "change", "drift"} {
+//
+// setup carries the one-time bootstrap token; pass auth.Completed() for a
+// deployment that already has accounts.
+func New(s *store.Store, setup *auth.Setup, demo bool) (*Server, error) {
+	if setup == nil {
+		setup = auth.Completed()
+	}
+	srv := &Server{store: s, tmpl: map[string]*template.Template{}, setup: setup, demo: demo}
+	for _, page := range []string{"fleet", "history", "change", "drift", "login", "setup"} {
 		t, err := template.New("layout").Funcs(funcs).ParseFS(files,
 			"templates/layout.html", "templates/"+page+".html")
 		if err != nil {
@@ -69,22 +80,58 @@ func New(s *store.Store) (*Server, error) {
 }
 
 // Handler returns the router.
+//
+// Every page except sign-in, setup and the health check requires an account.
+// There is no anonymous read path even in demo mode: a demo signs in as a
+// Viewer, which keeps one authentication path rather than a second, less
+// exercised one.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /{$}", s.fleet)
-	mux.HandleFunc("GET /history", s.history)
-	mux.HandleFunc("GET /database/{id}", s.database)
-	mux.HandleFunc("GET /change/{id}", s.change)
-	mux.HandleFunc("GET /drift", s.drift)
+
+	mux.HandleFunc("GET /{$}", s.requireUser(s.fleet))
+	mux.HandleFunc("GET /history", s.requireUser(s.history))
+	mux.HandleFunc("GET /database/{id}", s.requireUser(s.database))
+	mux.HandleFunc("GET /change/{id}", s.requireUser(s.change))
+	mux.HandleFunc("GET /drift", s.requireUser(s.drift))
+
+	mux.HandleFunc("GET /login", s.login)
+	mux.HandleFunc("POST /login", s.login)
+	mux.HandleFunc("GET /logout", s.logout)
+	mux.HandleFunc("GET /setup", s.setupHandler)
+	mux.HandleFunc("POST /setup", s.setupHandler)
+
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
-	return mux
+	return s.authenticate(mux)
 }
 
-func (s *Server) render(w http.ResponseWriter, page, title, nav string, data map[string]any) {
+// renderAuth draws the sign-in and setup pages, which have no account attached.
+func (s *Server) renderAuth(w http.ResponseWriter, r *http.Request, page, title string, cause error) {
+	data := map[string]any{
+		"MinPassword":  auth.MinPasswordLength,
+		"DemoEmail":    DemoEmail,
+		"DemoPassword": DemoPassword,
+	}
+	if cause != nil {
+		data["Error"] = cause.Error()
+		w.WriteHeader(http.StatusUnauthorized)
+	}
+	s.renderWith(w, r, page, title, "", data)
+}
+
+func (s *Server) render(w http.ResponseWriter, r *http.Request, page, title, nav string, data map[string]any) {
+	s.renderWith(w, r, page, title, nav, data)
+}
+
+func (s *Server) renderWith(w http.ResponseWriter, r *http.Request, page, title, nav string, data map[string]any) {
 	data["Title"], data["Nav"] = title, nav
+	data["Demo"] = s.demo
+	data["User"] = userFrom(r.Context())
+	if c, err := r.Cookie(sessionCookie); err == nil {
+		data["CSRF"] = csrfToken(c.Value)
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.tmpl[page].ExecuteTemplate(w, "layout", data); err != nil {
 		// The response is already partly written by this point, so the only
@@ -99,7 +146,7 @@ func (s *Server) fleet(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	s.render(w, "fleet", "Fleet", "fleet", map[string]any{"Rows": rows})
+	s.render(w, r, "fleet", "Fleet", "fleet", map[string]any{"Rows": rows})
 }
 
 func (s *Server) history(w http.ResponseWriter, r *http.Request) {
@@ -108,7 +155,7 @@ func (s *Server) history(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	s.render(w, "history", "History", "history",
+	s.render(w, r, "history", "History", "history",
 		map[string]any{"Entries": entries, "Database": ""})
 }
 
@@ -128,7 +175,7 @@ func (s *Server) database(w http.ResponseWriter, r *http.Request) {
 	if len(entries) > 0 {
 		name = entries[0].Database
 	}
-	s.render(w, "history", name, "history",
+	s.render(w, r, "history", name, "history",
 		map[string]any{"Entries": entries, "Database": name})
 }
 
@@ -168,7 +215,7 @@ func (s *Server) change(w http.ResponseWriter, r *http.Request) {
 	}
 
 	changes := history.ObjectsChanged(before, after)
-	s.render(w, "change", "Change", "history", map[string]any{
+	s.render(w, r, "change", "Change", "history", map[string]any{
 		"Entry":   entry,
 		"Changes": changes,
 		"Summary": history.Count(changes),
@@ -181,5 +228,5 @@ func (s *Server) drift(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	s.render(w, "drift", "Drift", "drift", map[string]any{"Rows": rows})
+	s.render(w, r, "drift", "Drift", "drift", map[string]any{"Rows": rows})
 }
