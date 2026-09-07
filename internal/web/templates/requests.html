@@ -1,0 +1,28 @@
+{{define "content"}}
+<h1>Changes</h1>
+<p class="sub">Proposed schema changes. A change is executable once a project
+administrator has approved it and no question is outstanding.</p>
+{{if .CanWrite}}<p><a class="btn" href="/requests/new">Propose a change</a></p>{{end}}
+<div class="card scroll">
+<table>
+<tr><th>#</th><th>Change</th><th>Database</th><th>State</th>
+<th>Changes</th><th>Open threads</th><th>Approved</th><th>Raised</th></tr>
+{{range .Rows}}
+<tr>
+  <td class="fp">{{.ID}}</td>
+  <td><a href="/requests/{{.ID}}">{{.Title}}</a><br>
+      <span class="fp">{{.Author}}</span></td>
+  <td>{{.Database}}{{if .Source}}<br><span class="fp">← {{.Source}}</span>{{end}}</td>
+  <td><span class="tag">{{.State}}</span>
+      {{if .StateReason}}<br><span class="fp">{{.StateReason}}</span>{{end}}</td>
+  <td>{{if .Changes}}{{.Changes}}{{else}}<span class="fp">—</span>{{end}}</td>
+  <td>{{if .OpenThreads}}<span class="modified">{{.OpenThreads}}</span>{{else}}<span class="fp">—</span>{{end}}</td>
+  <td>{{if .Approvals}}<span class="added">yes</span>{{else}}<span class="fp">no</span>{{end}}</td>
+  <td class="fp">{{stamp .CreatedAt}}</td>
+</tr>
+{{else}}
+<tr><td colspan="8" class="empty">No changes proposed yet.</td></tr>
+{{end}}
+</table>
+</div>
+{{end}}

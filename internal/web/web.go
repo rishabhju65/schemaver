@@ -86,7 +86,7 @@ func New(s *store.Store, setup *auth.Setup, openSignup bool, targets netguard.Po
 	srv := &Server{store: s, tmpl: map[string]*template.Template{},
 		setup: setup, openSignup: openSignup, targets: targets}
 	for _, page := range []string{"fleet", "history", "change", "drift", "login", "signup",
-		"instances", "instance_new", "instance"} {
+		"instances", "instance_new", "instance", "requests", "request_new", "request"} {
 		t, err := template.New("layout").Funcs(funcs).ParseFS(files,
 			"templates/layout.html", "templates/"+page+".html")
 		if err != nil {
@@ -112,6 +112,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /change/{id}", s.requireUser(s.change))
 	mux.HandleFunc("GET /drift", s.requireUser(s.drift))
 	mux.HandleFunc("GET /instances", s.requireUser(s.instances))
+	mux.HandleFunc("GET /requests", s.requireUser(s.requests))
+	mux.HandleFunc("GET /requests/{id}", s.requireUser(s.request))
+	mux.HandleFunc("GET /requests/new", s.requireWriter(s.requestNew))
+	mux.HandleFunc("POST /requests/new", s.requireWriter(s.requestNew))
+	mux.HandleFunc("POST /requests/{id}/act", s.requireWriter(s.act))
 	mux.HandleFunc("POST /project", s.requireUser(s.switchProject))
 	mux.HandleFunc("GET /instances/{id}", s.requireUser(s.instanceDetail))
 
@@ -170,6 +175,11 @@ func (s *Server) renderWith(w http.ResponseWriter, r *http.Request, page, title,
 	// them, so write controls are hidden while looking organisation-wide.
 	data["CanWrite"] = user != nil && user.Role.CanWrite() &&
 		currentProject(r.Context()) != allProjects
+	// Surfaced from the query string so a refused action explains itself on the
+	// page it came from, rather than as a bare error.
+	if msg := r.URL.Query().Get("error"); msg != "" && data["Error"] == nil {
+		data["Error"] = msg
+	}
 	if c, err := r.Cookie(sessionCookie); err == nil {
 		data["CSRF"] = csrfToken(c.Value)
 	}

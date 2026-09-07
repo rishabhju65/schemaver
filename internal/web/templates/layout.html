@@ -62,6 +62,24 @@ color:#fff;text-decoration:none;font-weight:600;font-size:13px}
 .banner.ok{border-color:var(--add);color:var(--add)}
 .banner.warn{border-color:var(--mod);color:var(--mod)}
 .banner pre{margin:0;background:transparent;border:0;padding:0;color:inherit}
+h2{font-size:15px;margin:0 0 3px;letter-spacing:-.01em}
+.gates{display:flex;gap:16px;flex-wrap:wrap;margin-top:8px;font-size:12px}
+.two-up{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+@media(max-width:900px){.two-up{grid-template-columns:1fr}}
+.change{display:flex;gap:11px;padding:9px 14px;border-bottom:1px solid var(--line);
+font-size:13px;align-items:flex-start}
+.change:last-child{border-bottom:0}
+.change code{word-break:break-all}
+.cls{flex:0 0 76px;font-size:10px;text-transform:uppercase;letter-spacing:.04em;
+padding-top:2px;font-weight:600}
+.cls.destructive{color:var(--del)}.cls.rewriting{color:var(--del)}
+.cls.lock_heavy{color:var(--mod)}.cls.additive{color:var(--add)}
+.cls.metadata_only{color:var(--dim)}
+.thread{margin-bottom:12px}
+.comment{padding:8px 0;border-top:1px solid var(--line);font-size:13px}
+.inline-form{display:flex;gap:8px;margin-top:10px;align-items:center}
+.inline-form input,.inline-form select{margin-top:0;width:auto;flex:1}
+.inline-form button{width:auto;padding:7px 12px}
 .who{color:var(--dim);font-size:12px}
 .switcher{padding:3px 8px;font:inherit;font-size:12px;border-radius:6px;
 background:var(--bg);color:var(--fg);border:1px solid var(--line)}
@@ -71,6 +89,7 @@ background:var(--bg);color:var(--fg);border:1px solid var(--line)}
   <a href="/" {{if eq .Nav "fleet"}}class="on"{{end}}>Fleet</a>
   <a href="/history" {{if eq .Nav "history"}}class="on"{{end}}>History</a>
   <a href="/drift" {{if eq .Nav "drift"}}class="on"{{end}}>Drift</a>
+  <a href="/requests" {{if eq .Nav "requests"}}class="on"{{end}}>Changes</a>
   <a href="/instances" {{if eq .Nav "instances"}}class="on"{{end}}>Servers</a>
   {{if .Projects}}
   <form method="post" action="/project" style="display:inline">

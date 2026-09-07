@@ -1,0 +1,177 @@
+{{define "content"}}
+{{$r := .R}}
+<h1>{{$r.Title}}</h1>
+<p class="sub">
+  #{{$r.ID}} · {{$r.Author}} · <span class="tag">{{$r.State}}</span> ·
+  {{$r.Database}}{{if $r.Source}} ← {{$r.Source}}{{end}}
+  {{if $r.MigrationID}}<br><span class="fp">{{short $r.From}} → {{short $r.To}}</span>
+  · generated {{stamp $r.GeneratedAt}}{{end}}
+</p>
+{{if $r.Description}}<p class="sub">{{$r.Description}}</p>{{end}}
+{{if .Error}}<p class="banner err">{{.Error}}</p>{{end}}
+
+{{if not $r.MigrationID}}
+<p class="banner warn">No migration has been generated. Either the two schemas
+already agree, or one of them has not been read yet.</p>
+{{if .CanWrite}}
+<form method="post" action="/requests/{{$r.ID}}/act" style="display:inline">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <input type="hidden" name="do" value="regenerate">
+  <button type="submit" class="secondary" style="width:auto">Try generating</button>
+</form>
+{{end}}
+{{else}}
+
+{{/* The gate, made visible. A reviewer should not have to remember the policy. */}}
+{{with $r.Approval}}
+<div class="card pad" style="margin-bottom:18px">
+  <b>Gate</b>
+  <div class="gates">
+    <span class="added">✓ generated · {{len $r.Steps}} statement(s)</span>
+    {{if .Blocking}}<span class="removed">✗ a reviewer objected</span>
+    {{else}}<span class="fp">○ no objection</span>{{end}}
+    {{if .UnansweredRenames}}<span class="removed">✗ {{.UnansweredRenames}} rename question(s) unanswered</span>
+    {{else}}<span class="added">✓ no open questions</span>{{end}}
+    {{if .AdminApprovals}}<span class="added">✓ {{.AdminApprovals}} administrator approval(s)</span>
+    {{else}}<span class="modified">○ awaiting an administrator</span>{{end}}
+  </div>
+  {{if .Executable}}
+  <p class="banner ok" style="margin:14px 0 0">Ready to execute. No executor is
+  built yet, so nothing will apply this — the gate is what exists today.</p>
+  {{else}}
+  <p class="banner warn" style="margin:14px 0 0">Not executable: {{.Reason}}</p>
+  {{end}}
+</div>
+{{end}}
+
+{{if $r.IrreversibleReason}}
+<p class="banner err"><b>Irreversible.</b> {{$r.IrreversibleReason}}. Surfaced
+now, while the choice is still open — not when it is needed.</p>
+{{end}}
+
+{{range $r.Renames}}
+<div class="banner warn">
+  <b>Unanswered question.</b> {{.Question}}<br>
+  <span class="fp">confidence: {{.Confidence}} · {{.From}} → {{.To}} ({{.Type}})</span>
+</div>
+{{end}}
+
+<div class="two-up">
+  <div>
+    <h2>Changes</h2>
+    <p class="sub">Ordered by what can hurt, not by execution order.</p>
+    <div class="card">
+      {{range $r.ByRisk}}
+      <div class="change">
+        <span class="cls {{.Class}}">{{.Class}}</span>
+        <div>{{.Summary}}<br><code class="fp">{{.ID}}</code></div>
+      </div>
+      {{end}}
+    </div>
+  </div>
+  <div>
+    <h2>Statements</h2>
+    <p class="sub">Execution order, with atomicity marked.</p>
+    <div class="card">
+      {{range $r.Steps}}
+      <div class="change">
+        <span class="cls {{if .Transactional}}metadata_only{{else}}lock_heavy{{end}}">
+          {{if .Transactional}}{{.Ordinal}}{{else}}!{{end}}</span>
+        <div><code>{{.SQL}}</code>
+          {{if .Note}}<br><span class="fp">{{.Note}}</span>{{end}}</div>
+      </div>
+      {{end}}
+    </div>
+  </div>
+</div>
+{{end}}
+
+<h2 style="margin-top:26px">Discussion</h2>
+{{range $r.Threads}}
+<div class="card pad thread">
+  <div class="fp">
+    {{if .Anchor}}<code>{{.Anchor}}</code>{{else}}on this request{{end}}
+    {{if .Orphaned}}<span class="tag" title="the change this refers to is no longer in the migration">change gone</span>{{end}}
+    {{if eq .Status "resolved"}}<span class="tag">resolved · {{.Resolution}}</span>{{end}}
+  </div>
+  {{range .Comments}}
+  <div class="comment"><b>{{.Author}}</b> <span class="fp">{{stamp .CreatedAt}}</span>
+    <div>{{.Body}}</div></div>
+  {{end}}
+  {{if and $.CanWrite (eq .Status "open")}}
+  <form method="post" action="/requests/{{$r.ID}}/act" class="inline-form">
+    <input type="hidden" name="csrf" value="{{$.CSRF}}">
+    <input type="hidden" name="do" value="comment">
+    <input type="hidden" name="thread" value="{{.ID}}">
+    <input name="body" placeholder="Reply" required>
+    <button type="submit" class="secondary">Reply</button>
+  </form>
+  <form method="post" action="/requests/{{$r.ID}}/act" class="inline-form">
+    <input type="hidden" name="csrf" value="{{$.CSRF}}">
+    <input type="hidden" name="do" value="resolve">
+    <input type="hidden" name="thread" value="{{.ID}}">
+    <select name="resolution">
+      <option value="addressed">addressed</option>
+      <option value="change_removed">the change is gone</option>
+      <option value="declined">declined</option>
+    </select>
+    <button type="submit" class="secondary">Resolve</button>
+  </form>
+  {{end}}
+</div>
+{{else}}
+<p class="sub">Nothing discussed yet.</p>
+{{end}}
+
+{{if .CanWrite}}
+<div class="card pad" style="margin-top:16px">
+  <form method="post" action="/requests/{{$r.ID}}/act">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <input type="hidden" name="do" value="comment">
+    <label>New comment<input name="body" required placeholder="What is on your mind"></label>
+    <label>About which change <span class="hint">optional — paste a change id to
+      anchor the thread to it, so it survives the migration being regenerated</span>
+      <input name="anchor" placeholder="drop_column:public.orders.legacy_status"></label>
+    <button type="submit" class="secondary" style="width:auto">Comment</button>
+  </form>
+</div>
+{{end}}
+
+{{if and .CanDecide $r.MigrationID}}
+<div class="card pad" style="margin-top:16px">
+  <b>Decide</b>
+  <p class="sub" style="margin:6px 0 12px">Only an administrator's approval opens
+  the gate. A decision records the schema versions it was made about, so
+  regenerating this migration withdraws it.</p>
+  <form method="post" action="/requests/{{$r.ID}}/act">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <input type="hidden" name="do" value="decide">
+    <label>Comment<input name="comment" placeholder="optional"></label>
+    <div class="row">
+      <button type="submit" name="verdict" value="approve">Approve</button>
+      <button type="submit" name="verdict" value="request_changes" class="secondary">Request changes</button>
+      <button type="submit" name="verdict" value="reject" class="secondary">Reject</button>
+    </div>
+  </form>
+</div>
+{{else if .IsAuthor}}
+<p class="sub" style="margin-top:16px">You raised this, so another project
+administrator must review it.</p>
+{{end}}
+
+{{with $r.Approval}}{{if .Decisions}}
+<h2 style="margin-top:22px">Decisions</h2>
+<div class="card scroll"><table>
+<tr><th>Reviewer</th><th>Role</th><th>Verdict</th><th>Comment</th><th>When</th></tr>
+{{range .Decisions}}
+<tr><td>{{.ReviewerLabel}}{{if .SelfApproved}} <span class="tag">self</span>{{end}}</td>
+  <td class="fp">{{.ReviewerRole}}</td>
+  <td>{{if .Approves}}<span class="added">{{.Verdict}}</span>
+      {{else if .Blocks}}<span class="removed">{{.Verdict}}</span>
+      {{else}}<span class="fp">{{.Verdict}}</span>{{end}}</td>
+  <td>{{if .Comment}}{{.Comment}}{{else}}<span class="fp">—</span>{{end}}</td>
+  <td class="fp">{{stamp .DecidedAt}}</td></tr>
+{{end}}
+</table></div>
+{{end}}{{end}}
+{{end}}

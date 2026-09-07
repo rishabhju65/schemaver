@@ -1,0 +1,29 @@
+{{define "content"}}
+<div class="narrow" style="max-width:600px">
+<h1>Propose a change</h1>
+<p class="sub">Bring one database in line with another. The target schema already
+exists, so there is nothing to author — schemaver diffs the two and generates the
+migration.</p>
+{{if .Error}}<p class="banner err">{{.Error}}</p>{{end}}
+<form method="post" action="/requests/new" class="card pad">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <label>Title<input name="title" required placeholder="bring production in line with staging"></label>
+  <label>Change this database
+    <select name="database" required>
+      <option value="">—</option>
+      {{range .Databases}}<option value="{{.ID}}">{{.Name}} · {{.Instance}}{{if .Environment}} · {{.Environment}}{{end}}</option>{{end}}
+    </select></label>
+  <label>To match this one
+    <select name="source" required>
+      <option value="">—</option>
+      {{range .Databases}}<option value="{{.ID}}">{{.Name}} · {{.Instance}}{{if .Environment}} · {{.Environment}}{{end}}</option>{{end}}
+    </select>
+    <span class="hint">Only databases whose schema has been read are listed —
+    one that has not been observed has nothing to diff against.</span></label>
+  <label>Why<textarea name="description" rows="3"
+    style="display:block;width:100%;margin-top:5px;padding:8px 10px;font:inherit;
+    background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:6px"></textarea></label>
+  <button type="submit">Propose and generate</button>
+</form>
+</div>
+{{end}}
