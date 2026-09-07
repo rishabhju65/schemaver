@@ -112,7 +112,7 @@ func (s *Scope) Blob(ctx context.Context, fingerprint schema.Version) (*schema.S
 		       SELECT 1 FROM schemaver.snapshot sn
 		         JOIN schemaver.database d ON d.id = sn.database_id
 		         JOIN schemaver.instance i ON i.id = d.instance_id
-		        WHERE sn.fingerprint = b.fingerprint AND i.project_id = ANY($2)`,
+		        WHERE sn.fingerprint = b.fingerprint AND i.project_id = ANY($2))`,
 		string(fingerprint), s.projects).Scan(&canonical); err != nil {
 		return nil, fmt.Errorf("load schema %s: %w", fingerprint.Short(), err)
 	}

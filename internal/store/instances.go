@@ -81,7 +81,7 @@ func (s *Scope) InstanceDetail(ctx context.Context, id int64) (*InstanceRow, []M
 		       COALESCE(size_bytes, 0), COALESCE(last_error, '')
 		  FROM schemaver.database
 		 WHERE instance_id = $1 AND archived_at IS NULL
-		   AND instance_id IN (SELECT id FROM schemaver.instance WHERE project_id = ANY($2)
+		   AND instance_id IN (SELECT id FROM schemaver.instance WHERE project_id = ANY($2))
 		 ORDER BY name`, id, s.projects)
 	if err != nil {
 		return nil, nil, fmt.Errorf("list databases: %w", err)
