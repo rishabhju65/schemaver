@@ -102,7 +102,10 @@ func (s *Store) InstanceDSN(ctx context.Context, instanceID int64, fallback stri
 
 // Target is a managed database a worker is about to observe.
 type Target struct {
-	DatabaseID  int64
+	DatabaseID int64
+	// InstanceID is carried so capacity can be recorded against the server while
+	// a connection to one of its databases is already open.
+	InstanceID  int64
 	Name        string
 	DSN         string
 	ProbeDigest string
@@ -122,15 +125,15 @@ func (s *Store) LoadTarget(ctx context.Context, databaseID int64, fullReadAfter 
 	t := &Target{DatabaseID: databaseID}
 
 	err := s.pool.QueryRow(ctx, `
-		SELECT d.name, i.host, i.port, i.tls_mode, c.username, c.kind,
+		SELECT d.name, i.id, i.host, i.port, i.tls_mode, c.username, c.kind,
 		       COALESCE(c.secret_ref, ''), COALESCE(c.secret_ciphertext, '\x'::bytea),
 		       d.probe_digest, d.last_read_at
 		FROM schemaver.database d
 		JOIN schemaver.instance i ON i.id = d.instance_id
 		JOIN schemaver.credential c ON c.id = i.credential_id
 		WHERE d.id = $1 AND d.archived_at IS NULL AND i.archived_at IS NULL`, databaseID).
-		Scan(&t.Name, &e.host, &e.port, &e.tlsMode, &e.username, &kind, &ref,
-			&ciphertext, &probe, &lastRead)
+		Scan(&t.Name, &t.InstanceID, &e.host, &e.port, &e.tlsMode, &e.username,
+			&kind, &ref, &ciphertext, &probe, &lastRead)
 	if err != nil {
 		return nil, fmt.Errorf("load database %d: %w", databaseID, err)
 	}
@@ -330,6 +333,34 @@ type Job struct {
 // ErrNoJob signals an empty queue. It is an expected condition, not a failure.
 var ErrNoJob = errors.New("no job available")
 
+// Budget decides how much work an instance may carry at once.
+//
+// Derived from observed headroom rather than from configuration: a server
+// permitting five hundred connections with four hundred and eighty in use has
+// twenty spare, and a fixed cap would be either absurdly low on a large server
+// or dangerous on a loaded one.
+type Budget struct {
+	// Floor is allowed whatever the headroom, so that a busy instance still
+	// makes progress rather than deadlocking on its own load. Set at least to
+	// the weight of one lock-heavy migration.
+	Floor int
+	// Ceiling bounds it however much headroom exists. Past a point more
+	// concurrency makes heavy work slower rather than faster, because the
+	// constraint becomes disk rather than connections.
+	Ceiling int
+	// Fraction is the share of observed headroom we are willing to consume. The
+	// rest belongs to the application the database exists to serve.
+	Fraction float64
+}
+
+// DefaultBudget is deliberately conservative. Consuming a sixth of what is spare
+// leaves the application room to grow between our samples, and a ceiling of
+// thirty-two is well past the point where more parallel index builds stop
+// helping.
+func DefaultBudget() Budget {
+	return Budget{Floor: 4, Ceiling: 32, Fraction: 0.15}
+}
+
 // ClaimJob takes the next due job and holds it under a lease.
 //
 // SKIP LOCKED lets many workers claim concurrently without blocking each other.
@@ -337,16 +368,27 @@ var ErrNoJob = errors.New("no job available")
 // becomes claimable again once the lease lapses, instead of sitting in 'running'
 // forever.
 //
-// perInstance caps how many jobs may be in flight against one instance at once.
-// The limit is evaluated inside the claim query rather than held in worker
-// memory, so it holds across every worker process rather than only within one.
-// Without it, an instance hosting forty databases would receive forty
-// simultaneous connections from us, which is an incident rather than a feature.
-// Instances at capacity are skipped, not waited on, so a busy instance never
-// blocks work on any other.
-func (s *Store) ClaimJob(ctx context.Context, workerID string, lease time.Duration, perInstance int) (*Job, error) {
-	if perInstance < 1 {
-		perInstance = 1
+// Work is admitted while the weight already in flight against an instance, plus
+// this job's own weight, stays inside that instance's budget. Weight comes from
+// what the work does — a metadata-only migration costs one, a table rewrite
+// eight — because connections are not the binding constraint: two concurrent
+// index builds compete for the same buffer cache however many slots are free.
+//
+// The whole calculation lives in the claim query rather than in worker memory,
+// so it holds across every worker process rather than within one. That is what
+// makes scaling out a matter of running more processes.
+//
+// Instances at capacity are skipped, never waited on, so a saturated instance
+// never blocks work on any other.
+func (s *Store) ClaimJob(ctx context.Context, workerID string, lease time.Duration, budget Budget) (*Job, error) {
+	if budget.Floor < 1 {
+		budget.Floor = 1
+	}
+	if budget.Ceiling < budget.Floor {
+		budget.Ceiling = budget.Floor
+	}
+	if budget.Fraction <= 0 {
+		budget.Fraction = 0.1
 	}
 	var j Job
 	var targetKind *string
@@ -360,18 +402,25 @@ func (s *Store) ClaimJob(ctx context.Context, workerID string, lease time.Durati
 		       started_at = COALESCE(started_at, now())
 		 WHERE id = (
 		     SELECT j.id FROM schemaver.job j
+		      LEFT JOIN schemaver.instance i ON i.id = j.instance_id
 		      WHERE ((j.state = 'pending' AND j.run_after <= now())
 		          OR (j.state = 'running' AND j.lease_until < now()))
 		        AND (j.instance_id IS NULL OR (
-		              SELECT count(*) FROM schemaver.job r
+		              SELECT COALESCE(sum(r.weight), 0) FROM schemaver.job r
 		               WHERE r.instance_id = j.instance_id
 		                 AND r.state = 'running'
-		                 AND r.lease_until > now()) < $3)
+		                 AND r.lease_until > now()) + j.weight
+		            <= GREATEST($3, LEAST($4, FLOOR((
+		                   COALESCE(i.max_connections, 100)
+		                 - COALESCE(i.reserved_connections, 3)
+		                 - COALESCE(i.used_connections, 0)) * $5)::int)))
 		      ORDER BY j.run_after
-		      FOR UPDATE SKIP LOCKED
+		      -- Only the job row is locked: an outer join's nullable side cannot
+		      -- be, and the instance row is read rather than claimed.
+		      FOR UPDATE OF j SKIP LOCKED
 		      LIMIT 1)
 		RETURNING id, kind, target_kind, target_id, instance_id, attempts`,
-		workerID, lease.String(), perInstance).
+		workerID, lease.String(), budget.Floor, budget.Ceiling, budget.Fraction).
 		Scan(&j.ID, &j.Kind, &targetKind, &targetID, &instanceID, &j.Attempts)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNoJob
@@ -451,4 +500,21 @@ func (s *Store) EnqueueDue(ctx context.Context, every time.Duration) (int, error
 		return 0, fmt.Errorf("enqueue discovery: %w", err)
 	}
 	return n + int(tag.RowsAffected()), nil
+}
+
+// RecordCapacity stores an instance's connection headroom, sampled while
+// observing one of its databases.
+//
+// Sampled opportunistically rather than on a schedule of its own: the
+// observation loop already connects to every managed database, so this costs one
+// extra query on a connection that is open anyway.
+func (s *Store) RecordCapacity(ctx context.Context, instanceID int64, max, reserved, used int) error {
+	if _, err := s.pool.Exec(ctx, `
+		UPDATE schemaver.instance
+		   SET max_connections = $2, reserved_connections = $3,
+		       used_connections = $4, capacity_sampled_at = now()
+		 WHERE id = $1`, instanceID, max, reserved, used); err != nil {
+		return fmt.Errorf("record capacity: %w", err)
+	}
+	return nil
 }

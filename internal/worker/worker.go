@@ -36,10 +36,9 @@ type Config struct {
 	// Concurrency is how many jobs this worker runs at once, across all
 	// instances.
 	Concurrency int
-	// PerInstance caps how many jobs may run against any single instance at
-	// once. Instances are worked in parallel; databases within one instance are
-	// not, beyond this limit.
-	PerInstance int
+	// Budget bounds how much work one instance may carry at once, derived from
+	// its observed connection headroom rather than fixed.
+	Budget store.Budget
 }
 
 func (c *Config) setDefaults() {
@@ -58,8 +57,8 @@ func (c *Config) setDefaults() {
 	if c.Concurrency <= 0 {
 		c.Concurrency = 8
 	}
-	if c.PerInstance <= 0 {
-		c.PerInstance = 2
+	if c.Budget.Ceiling == 0 {
+		c.Budget = store.DefaultBudget()
 	}
 	if c.ID == "" {
 		c.ID = fmt.Sprintf("worker-%d", time.Now().UnixNano())
@@ -68,12 +67,15 @@ func (c *Config) setDefaults() {
 
 // Worker claims jobs and executes them.
 //
-// Many instances are observed simultaneously; that is the normal case. Work is
-// spread across Concurrency goroutines, with no more than PerInstance jobs in
-// flight against any one instance. The per-instance limit is enforced by the
-// claim query rather than here, so it holds across worker processes too, and
-// instances at capacity are skipped rather than waited on — a slow instance
-// never stalls progress on the others.
+// Many instances are worked simultaneously; that is the normal case. Work spreads
+// across Concurrency goroutines, admitted while the weight in flight against an
+// instance stays inside that instance's budget — which is derived from its
+// observed connection headroom rather than fixed, so a server permitting a
+// thousand connections is not held to the same limit as one permitting a hundred.
+//
+// The budget is enforced by the claim query rather than here, so it holds across
+// worker processes. Scaling to a large fleet is therefore a matter of running
+// more processes, not of tuning this one.
 type Worker struct {
 	store *store.Store
 	cfg   Config
@@ -159,7 +161,7 @@ func (w *Worker) drainLoop(ctx context.Context, id string) {
 
 // drainOnce claims and runs a single job, reporting whether it found one.
 func (w *Worker) drainOnce(ctx context.Context, id string) bool {
-	job, err := w.store.ClaimJob(ctx, id, w.cfg.Lease, w.cfg.PerInstance)
+	job, err := w.store.ClaimJob(ctx, id, w.cfg.Lease, w.cfg.Budget)
 	if err == store.ErrNoJob {
 		return false
 	}
@@ -285,6 +287,14 @@ func (w *Worker) read(ctx context.Context, t *store.Target) error {
 		return fmt.Errorf("connect: %w", err)
 	}
 	defer conn.Close(context.Background())
+
+	// Sampled on a connection that is open anyway, so the budget stays current
+	// without a schedule of its own.
+	if cap, err := introspect.SampleCapacity(ctx, conn); err == nil {
+		if err := w.store.RecordCapacity(ctx, t.InstanceID, cap.Max, cap.Reserved, cap.Used); err != nil {
+			w.log.Warn("recording connection capacity failed", "error", err)
+		}
+	}
 
 	digest, err := introspect.Probe(ctx, conn)
 	if err != nil {

@@ -264,6 +264,40 @@ Detection is fingerprint inequality, so it needed nothing from the diff engine.
 - Manual override of the generated migration, permanently marked as hand-edited.
 - Save opens a pull request carrying schema and migration together.
 
+### 14a. Request lifecycle
+
+Twelve states, not twenty-seven (D-017). A state earns its place only if it
+changes what a human does next; everything else is a *reason* on a surviving
+state.
+
+```
+INITIATED → IN_REVIEW → REVIEWED → STAGE_SANITY → READY_TO_EXECUTE
+          → EXECUTING → COMPLETED
+```
+
+- `CHANGES_REQUESTED` — the author must act
+- `STALE` — the base moved, evidence is void, regenerate. Not a failure.
+- `FAILED` — failed cleanly; the database is unchanged
+- `NEEDS_ATTENTION` — halted ambiguously; a human decides
+- `CLOSED` — rejected or withdrawn
+
+**Every gate that produces evidence must be able to void it.** The shadow proof,
+the approval and the staging pass are all claims about one `from` fingerprint.
+When the base moves they expire together — otherwise something gets executed
+that was reviewed against a schema which no longer exists.
+
+**`NEEDS_ATTENTION` absorbs every dangerous condition** — partial application, a
+stuck lock holder, an unexpected outcome, partial promotion across shards. That
+is safer than separate states rather than merely tidier: one halt path means a
+newly discovered dangerous condition cannot slip into an "ok" branch because
+nobody remembered to add a state for it.
+
+**Distinguish "the change is wrong" from "the environment is broken"** in the
+reason at every stage. Different owner, different fix, different urgency.
+
+*Partially built:* the reconciliation verdicts in `internal/guard` map onto
+`NEEDS_ATTENTION` and `FAILED`.
+
 ### 15. Review and approval
 
 Review happens here, not in the version-control provider, per D-008.
@@ -338,15 +372,33 @@ Three gates stand between approval and production, per D-009 through D-012.
   `to`, or back to `from`.
 - **Revert drift** — apply the migration that undoes an out-of-band change.
 
-### 17. Policy and administration
+### 17. Permissions and administration
 
-- Rule catalogue: enable per environment, assign severity.
-- **Backtest a ruleset** against the last N migrations before enabling it, so
-  nobody turns on a rule that would have blocked everything they shipped.
-- Approval policy per environment and risk level.
-- Users, and per-environment permissions separating who may approve from who may
-  execute.
+Five actions rather than a role ladder (D-016): **view**, **propose**,
+**approve**, **execute**, **manage**.
+
+- **Proposing is not writing.** A developer raises change requests constantly and
+  applies nothing. Treating "propose" as a write would force every developer to
+  hold the permission the review process exists to constrain.
+- **approve and execute are gated by environment rank.** Self-approval into
+  development is ordinary; production requires whoever policy names. A single
+  global answer is always wrong in one direction.
+- **Author and approver must differ**, configurably, per environment. A rule, not
+  a role — otherwise "has all access" quietly means review is optional for
+  exactly the people most able to cause damage.
+- **manage is separate from execute**, because registering a database *stores a
+  credential* while migrating one merely uses it. Registration is the more
+  sensitive act.
+- Two organisation roles, not one: an **auditor** reads every project and
+  approves nothing; a **DBA** reads, approves and executes everywhere. Splitting
+  them keeps "I must see everything" from arriving bundled with "I can change
+  everything".
+- Rule catalogue per environment, and **backtest a ruleset** against recent
+  migrations before enabling it, so nobody turns on a rule that would have
+  blocked everything they shipped.
 - Audit log viewer, filterable and exportable.
+
+*Not built:* all of it. What exists is three ungated roles from D-014.
 
 ## Backend
 
