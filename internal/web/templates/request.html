@@ -95,6 +95,23 @@ now, while the choice is still open — not when it is needed.</p>
 </div>
 {{end}}
 
+{{with $r.Timeline}}
+<h2 style="margin-top:26px">Timeline</h2>
+<p class="sub">What has happened to this request, in order. What happened inside
+a run is kept with that run, below.</p>
+<div class="card pad">
+  {{range .}}
+  <div class="change">
+    <span class="fp">{{stamp .At}}</span>
+    <div>
+      <span class="{{if eq .Level "error"}}err{{else if eq .Level "warn"}}modified{{end}}">{{.Message}}</span>
+      <br><span class="fp">{{.Actor}}</span>
+    </div>
+  </div>
+  {{end}}
+</div>
+{{end}}
+
 {{with $r.Execution}}
 <h2 style="margin-top:26px">Execution</h2>
 <div class="card pad">

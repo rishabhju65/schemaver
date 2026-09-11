@@ -101,6 +101,10 @@ type RequestDetail struct {
 	// rolled back is precisely what a viewer needs to see, and showing only the
 	// last one hides it behind the retry that succeeded.
 	Executions []*ExecutionView
+
+	// Timeline is the request's own story — opened, generated, reviewed,
+	// queued. What happened inside an execution belongs to that execution.
+	Timeline []Activity
 }
 
 // Execution is the most recent attempt, or nil if there has never been one.
@@ -217,6 +221,9 @@ func (s *Scope) Request(ctx context.Context, id int64) (*RequestDetail, error) {
 	if d.Executions, err = s.Executions(ctx, id); err != nil {
 		return nil, err
 	}
+	if d.Timeline, err = s.ActivityForRequest(ctx, id); err != nil {
+		return nil, err
+	}
 	for _, t := range d.Threads {
 		if t.Status == "open" {
 			d.OpenThreads++
@@ -292,21 +299,8 @@ type ExecutionView struct {
 	ObservedAt   *time.Time
 
 	Steps  []ExecutionStep
-	Events []EventView
+	Events []Activity
 }
-
-// EventView is one entry in an execution's activity log.
-type EventView struct {
-	At      time.Time
-	Ordinal *int
-	Level   string
-	Kind    string
-	Message string
-	Detail  string
-}
-
-// Notable reports an entry worth surfacing without reading the whole log.
-func (e EventView) Notable() bool { return e.Level != "info" }
 
 // Running reports whether this execution is still in flight, which is what
 // decides whether the page should keep refreshing.
@@ -420,24 +414,26 @@ func (s *Scope) Executions(ctx context.Context, requestID int64) ([]*ExecutionVi
 	}
 
 	events, err := s.store.pool.Query(ctx, `
-		SELECT execution_id, at, ordinal, level, kind, message,
-		       COALESCE(detail::text, '')
-		  FROM schemaver.execution_event
-		 WHERE execution_id = ANY($1)
-		 ORDER BY execution_id, id`, ids)
+		SELECT a.execution_id,`+activityColumns+`
+		  FROM schemaver.activity a
+		  LEFT JOIN schemaver.database d ON d.id = a.database_id
+		  LEFT JOIN schemaver.change_request r ON r.id = a.request_id
+		 WHERE a.execution_id = ANY($1)
+		 ORDER BY a.execution_id, a.id`, ids)
 	if err != nil {
 		return nil, fmt.Errorf("load execution events: %w", err)
 	}
 	defer events.Close()
 	for events.Next() {
 		var id int64
-		var e EventView
-		if err := events.Scan(&id, &e.At, &e.Ordinal, &e.Level,
-			&e.Kind, &e.Message, &e.Detail); err != nil {
+		var a Activity
+		if err := events.Scan(&id, &a.ID, &a.At, &a.Actor, &a.Level, &a.Kind,
+			&a.Message, &a.Detail, &a.DatabaseID, &a.RequestID, &a.ExecutionID,
+			&a.Ordinal, &a.Database, &a.Request); err != nil {
 			return nil, fmt.Errorf("scan execution event: %w", err)
 		}
 		if v := byID[id]; v != nil {
-			v.Events = append(v.Events, e)
+			v.Events = append(v.Events, a)
 		}
 	}
 	return views, events.Err()

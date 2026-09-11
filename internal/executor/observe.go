@@ -20,7 +20,7 @@ import (
 // Nothing here can fail the migration. A lost sample, a refused connection, a
 // privilege we do not have: all of them mean less is known, never that less is
 // done.
-func (e *Executor) observe(dsn string, executionID int64, pid int32) func() {
+func (e *Executor) observe(x *store.Execution, executionID int64, pid int32) func() {
 	done := make(chan struct{})
 	go func() {
 		// Its own context, not the migration's: observation should keep running
@@ -33,7 +33,7 @@ func (e *Executor) observe(dsn string, executionID int64, pid int32) func() {
 			cancel()
 		}()
 
-		conn, err := pgx.Connect(ctx, dsn)
+		conn, err := pgx.Connect(ctx, x.DSN)
 		if err != nil {
 			e.log.Debug("could not open an observing connection; progress will not be reported",
 				"error", err)
@@ -62,7 +62,7 @@ func (e *Executor) observe(dsn string, executionID int64, pid int32) func() {
 				if err := e.store.RecordProgress(ctx, executionID, *p); err != nil {
 					e.log.Debug("recording progress failed", "error", err)
 				}
-				e.logTransitions(ctx, executionID, prev, *p, &waitSince)
+				e.logTransitions(ctx, x, executionID, prev, *p, &waitSince)
 				prev = *p
 			}
 		}
@@ -124,12 +124,8 @@ func backendPID(ctx context.Context, conn *pgx.Conn) (int32, error) {
 // waitSince is carried across calls so that the end of a wait can report how
 // long it lasted, which is the number a person actually wants: "blocked for
 // eleven minutes" says something that "blocked" does not.
-func (e *Executor) logTransitions(ctx context.Context, executionID int64, prev, now store.Progress, waitSince *time.Time) {
-	record := func(ev store.Event) {
-		if err := e.store.AppendEvent(ctx, executionID, ev); err != nil {
-			e.log.Debug("recording an execution event failed", "error", err)
-		}
-	}
+func (e *Executor) logTransitions(ctx context.Context, x *store.Execution, executionID int64, prev, now store.Progress, waitSince *time.Time) {
+	record := func(ev *store.Event) { e.event(ctx, x, executionID, ev) }
 
 	switch {
 	case len(now.BlockedBy) > 0 && len(prev.BlockedBy) == 0:

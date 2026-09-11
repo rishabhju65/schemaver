@@ -49,9 +49,9 @@ func TestRequestPageRenders(t *testing.T) {
 			ChangeID: "add_column:public.orders.channel",
 			Started:  &began, Finished: &ended,
 		}},
-		Events: []store.EventView{
-			{At: now, Level: "info", Kind: "execution.started", Message: "applying 2 statement(s)"},
-			{At: now, Ordinal: &step, Level: "info", Kind: "step.applied", Message: "applied add_column"},
+		Events: []store.Activity{
+			{At: now, Actor: "schemaver", Level: "info", Kind: "execution.started", Message: "applying 2 statement(s)"},
+			{At: now, Actor: "schemaver", Ordinal: &step, Level: "info", Kind: "step.applied", Message: "applied add_column"},
 		},
 	}
 
@@ -65,9 +65,9 @@ func TestRequestPageRenders(t *testing.T) {
 		WaitEvent: "Lock:relation", BlockedBy: []int32{49445},
 		BlockerQuery: "SELECT count(*) FROM orders;",
 		Phase:        "building index", Percent: &percent, ObservedAt: &now,
-		Events: []store.EventView{
-			{At: now, Level: "warn", Kind: "wait.began", Message: "waiting on a lock"},
-			{At: now, Ordinal: &step, Level: "error", Kind: "step.failed", Message: "lock timeout"},
+		Events: []store.Activity{
+			{At: now, Actor: "schemaver", Level: "warn", Kind: "wait.began", Message: "waiting on a lock"},
+			{At: now, Actor: "schemaver", Ordinal: &step, Level: "error", Kind: "step.failed", Message: "lock timeout"},
 		},
 	}
 
@@ -88,6 +88,12 @@ func TestRequestPageRenders(t *testing.T) {
 		}},
 		Steps:      []store.Step{{Ordinal: 1, SQL: "ALTER TABLE public.orders ADD COLUMN channel text;", ChangeID: "add_column:public.orders.channel", Transactional: true}},
 		Executions: []*store.ExecutionView{finished, blocked},
+		Timeline: []store.Activity{
+			{At: began, Actor: "admin@example.com", Level: "info",
+				Kind: "request.opened", Message: "bring production in line with staging"},
+			{At: began, Actor: "admin@example.com", Level: "warn",
+				Kind: "migration.generated", Message: "3 change(s), 1 of them destructive"},
+		},
 	}
 
 	// Both orderings, so the panel is exercised against a live attempt as well
@@ -123,6 +129,7 @@ func TestRequestPageRenders(t *testing.T) {
 	for _, want := range []string{
 		"Activity", "Earlier attempts",
 		"applying 2 statement(s)", "waiting on a lock", "lock timeout",
+		"Timeline", "1 of them destructive", "admin@example.com",
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("the rendered page does not mention %q", want)

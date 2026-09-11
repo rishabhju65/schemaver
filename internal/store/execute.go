@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -67,15 +66,21 @@ func (s *Scope) EnqueueExecution(ctx context.Context, requestID int64) error {
 		 WHERE id = $1`, requestID); err != nil {
 		return fmt.Errorf("advance request: %w", err)
 	}
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	return nil
 }
 
 // Execution is everything needed to run one migration.
 type Execution struct {
-	MigrationID  int64
-	RequestID    int64
-	DatabaseID   int64
-	InstanceID   int64
+	MigrationID int64
+	RequestID   int64
+	DatabaseID  int64
+	InstanceID  int64
+	// ProjectID is carried so the executor can record activity without another
+	// lookup — the instance it already joins to knows the project.
+	ProjectID    int64
 	DatabaseName string
 
 	DSN  string
@@ -99,7 +104,7 @@ func (s *Store) LoadExecution(ctx context.Context, migrationID int64) (*Executio
 	var from, to string
 
 	err := s.pool.QueryRow(ctx, `
-		SELECT m.id, r.id, d.id, i.id, d.name,
+		SELECT m.id, r.id, d.id, i.id, i.project_id, d.name,
 		       m.from_fingerprint, m.to_fingerprint,
 		       i.host, i.port, i.tls_mode, c.username, c.kind,
 		       COALESCE(c.secret_ref, ''), COALESCE(c.secret_ciphertext, '\x'::bytea)
@@ -109,7 +114,8 @@ func (s *Store) LoadExecution(ctx context.Context, migrationID int64) (*Executio
 		  JOIN schemaver.instance i ON i.id = d.instance_id
 		  JOIN schemaver.credential c ON c.id = i.credential_id
 		 WHERE m.id = $1 AND m.superseded_at IS NULL`, migrationID).
-		Scan(&x.MigrationID, &x.RequestID, &x.DatabaseID, &x.InstanceID, &x.DatabaseName,
+		Scan(&x.MigrationID, &x.RequestID, &x.DatabaseID, &x.InstanceID, &x.ProjectID,
+			&x.DatabaseName,
 			&from, &to, &e.host, &e.port, &e.tlsMode, &e.username, &kind, &ref, &ciphertext)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, errors.New("migration not found, or superseded since it was queued")
@@ -265,54 +271,4 @@ func (s *Store) FinishExecution(ctx context.Context, executionID int64, state, r
 		return fmt.Errorf("finish execution record: %w", err)
 	}
 	return nil
-}
-
-// Event is one entry in an execution's activity log.
-type Event struct {
-	// Ordinal names the statement this concerns, or is nil for the run itself.
-	Ordinal *int
-	Level   string
-	Kind    string
-	Message string
-	// Detail is the structured form, marshalled to JSON. Nil where there is
-	// nothing to add beyond the message.
-	Detail any
-}
-
-// Info, Warn and Error build the three severities, keeping the level a property
-// of the constructor rather than a string every caller has to remember.
-func Info(kind, message string) Event  { return Event{Level: "info", Kind: kind, Message: message} }
-func Warn(kind, message string) Event  { return Event{Level: "warn", Kind: kind, Message: message} }
-func Error(kind, message string) Event { return Event{Level: "error", Kind: kind, Message: message} }
-
-// At attaches the event to a statement.
-func (e Event) At(ordinal int) Event { e.Ordinal = &ordinal; return e }
-
-// With attaches the structured detail.
-func (e Event) With(detail any) Event { e.Detail = detail; return e }
-
-// AppendEvent adds one entry to an execution's activity log.
-//
-// Like RecordProgress, this reports rather than participates: a caller logs the
-// error and carries on, because failing to describe a migration must never
-// affect the migration.
-func (s *Store) AppendEvent(ctx context.Context, executionID int64, e Event) error {
-	var detail []byte
-	if e.Detail != nil {
-		var err error
-		if detail, err = json.Marshal(e.Detail); err != nil {
-			// Recorded without its structured half rather than dropped: the
-			// message is the part a person reads.
-			detail = nil
-		}
-	}
-	if e.Level == "" {
-		e.Level = "info"
-	}
-	_, err := s.pool.Exec(ctx, `
-		INSERT INTO schemaver.execution_event
-		       (execution_id, ordinal, level, kind, message, detail)
-		VALUES ($1, $2, $3, $4, $5, $6)`,
-		executionID, e.Ordinal, e.Level, e.Kind, e.Message, detail)
-	return err
 }
