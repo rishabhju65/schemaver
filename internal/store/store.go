@@ -442,7 +442,13 @@ func (s *Store) ClaimJob(ctx context.Context, workerID string, lease time.Durati
 		            <= GREATEST($3, LEAST($4, FLOOR((
 		                   COALESCE(i.max_connections, 100)
 		                 - COALESCE(i.reserved_connections, 3)
-		                 - COALESCE(i.used_connections, 0)) * $5)::int)))
+		                 -- $5 is cast explicitly. Left to inference, Postgres
+		                 -- resolves "integer * unknown" to integer arithmetic
+		                 -- and types the parameter as an integer, which silently
+		                 -- truncates the fraction to zero: every instance then
+		                 -- gets the floor as its budget, and work heavier than
+		                 -- the floor is never claimable at all.
+		                 - COALESCE(i.used_connections, 0)) * $5::float8)::int)))
 		      ORDER BY j.run_after
 		      -- Only the job row is locked: an outer join's nullable side cannot
 		      -- be, and the instance row is read rather than claimed.
