@@ -134,7 +134,29 @@ func (e *Executor) Execute(ctx context.Context, x *store.Execution) (Outcome, er
 	if err != nil {
 		return Outcome{}, err
 	}
+	e.event(ctx, executionID, store.Info("execution.started",
+		fmt.Sprintf("applying %d statement(s) to %s, taking it from %s to %s",
+			len(x.Steps), x.DatabaseName, x.From.Short(), x.To.Short())).
+		With(map[string]any{
+			"database": x.DatabaseName, "statements": len(x.Steps),
+			"from": string(x.From), "to": string(x.To),
+		}))
+
 	finish := func(state, reason, final string) {
+		// Written before the record is closed, so the log ends with the reason
+		// the run ended rather than leaving the reader to infer it from the
+		// last thing that happened to be observed.
+		level := store.Info
+		switch state {
+		case "failed":
+			level = store.Warn
+		case "needs_attention":
+			level = store.Error
+		}
+		e.event(context.WithoutCancel(ctx), executionID,
+			level("execution."+state, reason).
+				With(map[string]any{"state": state, "final_fingerprint": final}))
+
 		if ferr := e.store.FinishExecution(context.WithoutCancel(ctx),
 			executionID, state, reason, final); ferr != nil {
 			e.log.Warn("closing the execution record failed", "error", ferr)
@@ -216,6 +238,9 @@ func (e *Executor) Execute(ctx context.Context, x *store.Execution) (Outcome, er
 		// than implying the schema change did not happen.
 		e.log.Warn("could not write the history row in the target database",
 			"database", x.DatabaseName, "error", err)
+		e.event(ctx, executionID, store.Warn("history.unwritten",
+			"the migration applied, but schemaver could not record it inside the "+
+				"target database: "+err.Error()))
 	}
 
 	finish("completed", fmt.Sprintf("applied %d statement(s)", applied), string(after))
@@ -238,12 +263,16 @@ func (e *Executor) apply(ctx context.Context, conn *pgx.Conn, executionID int64,
 	for i := 0; i < len(x.Steps); {
 		if !x.Steps[i].Transactional {
 			st := x.Steps[i]
-			e.mark(ctx, executionID, st.Ordinal)
+			e.mark(ctx, executionID, st)
 			err := e.runStandalone(ctx, conn, st)
 			e.markDone(ctx, executionID, st.Ordinal, err)
 			if err != nil {
+				e.event(ctx, executionID,
+					store.Error("step.failed", err.Error()).At(st.Ordinal))
 				return applied, err
 			}
+			e.event(ctx, executionID,
+				store.Info("step.applied", "applied "+st.ChangeID).At(st.Ordinal))
 			applied++
 			i++
 			continue
@@ -267,15 +296,24 @@ func (e *Executor) apply(ctx context.Context, conn *pgx.Conn, executionID int64,
 // mark and markDone keep the progress record current. They never return an
 // error: losing a progress update must not affect the migration, and a caller
 // forced to handle that error would have nothing useful to do with it.
-func (e *Executor) mark(ctx context.Context, executionID int64, ordinal int) {
-	if err := e.store.BeginStep(ctx, executionID, ordinal); err != nil {
-		e.log.Debug("recording step start failed", "step", ordinal, "error", err)
+func (e *Executor) mark(ctx context.Context, executionID int64, st store.Step) {
+	if err := e.store.BeginStep(ctx, executionID, st.Ordinal); err != nil {
+		e.log.Debug("recording step start failed", "step", st.Ordinal, "error", err)
 	}
+	e.event(ctx, executionID, store.Info("step.started", "running "+st.ChangeID).At(st.Ordinal))
 }
 
 func (e *Executor) markDone(ctx context.Context, executionID int64, ordinal int, cause error) {
 	if err := e.store.FinishStep(context.WithoutCancel(ctx), executionID, ordinal, cause); err != nil {
 		e.log.Debug("recording step finish failed", "step", ordinal, "error", err)
+	}
+}
+
+// event adds one entry to the execution's activity log. Like mark, it returns
+// nothing: failing to describe a migration must not affect the migration.
+func (e *Executor) event(ctx context.Context, executionID int64, ev store.Event) {
+	if err := e.store.AppendEvent(ctx, executionID, ev); err != nil {
+		e.log.Debug("recording an execution event failed", "error", err)
 	}
 }
 
@@ -291,15 +329,30 @@ func (e *Executor) runBatch(ctx context.Context, conn *pgx.Conn, executionID int
 
 	for _, st := range steps {
 		e.log.Info("applying", "step", st.Ordinal, "change", st.ChangeID)
-		e.mark(ctx, executionID, st.Ordinal)
+		e.mark(ctx, executionID, st)
 		if _, err := tx.Exec(ctx, st.SQL); err != nil {
 			_ = tx.Rollback(ctx)
 			failure := fmt.Errorf("step %d (%s): %w", st.Ordinal, st.ChangeID, err)
 			// Nothing in the batch took effect, so every statement in it failed
 			// — including the ones that had appeared to succeed.
 			for _, rolled := range steps {
-				if rolled.Ordinal <= st.Ordinal {
-					e.markDone(ctx, executionID, rolled.Ordinal, failure)
+				if rolled.Ordinal > st.Ordinal {
+					continue
+				}
+				e.markDone(ctx, executionID, rolled.Ordinal, failure)
+				// The log distinguishes the statement that actually broke from
+				// the ones undone alongside it. The step records cannot — they
+				// all carry the same cause, because none of them took effect —
+				// but a reader looking for what went wrong needs to be pointed
+				// at one statement rather than all of them.
+				if rolled.Ordinal == st.Ordinal {
+					e.event(ctx, executionID,
+						store.Error("step.failed", err.Error()).At(rolled.Ordinal))
+				} else {
+					e.event(ctx, executionID,
+						store.Warn("step.rolled_back",
+							"undone when a later statement in the same transaction failed").
+							At(rolled.Ordinal))
 				}
 			}
 			return 0, failure
@@ -310,6 +363,8 @@ func (e *Executor) runBatch(ctx context.Context, conn *pgx.Conn, executionID int
 	}
 	for _, st := range steps {
 		e.markDone(ctx, executionID, st.Ordinal, nil)
+		e.event(ctx, executionID,
+			store.Info("step.applied", "applied "+st.ChangeID).At(st.Ordinal))
 	}
 	return len(steps), nil
 }

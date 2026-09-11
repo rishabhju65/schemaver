@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -42,6 +43,13 @@ func (e *Executor) observe(dsn string, executionID int64, pid int32) func() {
 
 		tick := time.NewTicker(2 * time.Second)
 		defer tick.Stop()
+
+		// The previous observation, so the log can record transitions rather
+		// than samples. Two seconds of ticking over forty minutes is around
+		// twelve hundred observations, nearly all identical; writing each one
+		// would bury the handful of moments that explain the run.
+		var prev store.Progress
+		var waitSince time.Time
 		for {
 			select {
 			case <-ctx.Done():
@@ -54,10 +62,8 @@ func (e *Executor) observe(dsn string, executionID int64, pid int32) func() {
 				if err := e.store.RecordProgress(ctx, executionID, *p); err != nil {
 					e.log.Debug("recording progress failed", "error", err)
 				}
-				if len(p.BlockedBy) > 0 {
-					e.log.Warn("migration is waiting on another session",
-						"blocked_by", p.BlockedBy, "wait", p.WaitEvent)
-				}
+				e.logTransitions(ctx, executionID, prev, *p, &waitSince)
+				prev = *p
 			}
 		}
 	}()
@@ -110,4 +116,85 @@ func backendPID(ctx context.Context, conn *pgx.Conn) (int32, error) {
 		return 0, err
 	}
 	return pid, nil
+}
+
+// logTransitions writes an event for each way this observation differs from the
+// one before it, and nothing at all when they agree.
+//
+// waitSince is carried across calls so that the end of a wait can report how
+// long it lasted, which is the number a person actually wants: "blocked for
+// eleven minutes" says something that "blocked" does not.
+func (e *Executor) logTransitions(ctx context.Context, executionID int64, prev, now store.Progress, waitSince *time.Time) {
+	record := func(ev store.Event) {
+		if err := e.store.AppendEvent(ctx, executionID, ev); err != nil {
+			e.log.Debug("recording an execution event failed", "error", err)
+		}
+	}
+
+	switch {
+	case len(now.BlockedBy) > 0 && len(prev.BlockedBy) == 0:
+		*waitSince = time.Now()
+		e.log.Warn("migration is waiting on another session",
+			"blocked_by", now.BlockedBy, "wait", now.WaitEvent)
+		record(store.Warn("wait.began",
+			fmt.Sprintf("waiting on %s, held by %v", waitName(now.WaitEvent), now.BlockedBy)).
+			With(map[string]any{
+				"wait_event":    now.WaitEvent,
+				"blocked_by":    now.BlockedBy,
+				"blocker_query": now.BlockerQuery,
+			}))
+
+	case len(now.BlockedBy) == 0 && len(prev.BlockedBy) > 0:
+		waited := time.Since(*waitSince).Round(time.Second)
+		record(store.Info("wait.ended",
+			fmt.Sprintf("no longer waiting, after %s", waited)).
+			With(map[string]any{"waited_seconds": waited.Seconds()}))
+	}
+
+	// A phase change is the one progress signal worth recording unconditionally:
+	// there are only a handful of them in an index build, and each marks real
+	// work starting.
+	if now.Phase != "" && now.Phase != prev.Phase {
+		record(store.Info("progress.phase", "index build: "+now.Phase).
+			With(map[string]any{"phase": now.Phase, "percent": now.Percent}))
+	}
+
+	// Percentages, by contrast, change on nearly every sample, so they are
+	// recorded at coarse milestones instead.
+	if crossed, ok := milestone(prev.Percent, now.Percent); ok {
+		record(store.Info("progress.percent",
+			fmt.Sprintf("index build %d%% complete", crossed)).
+			With(map[string]any{"percent": now.Percent, "phase": now.Phase}))
+	}
+}
+
+// milestone reports a twenty-percent boundary newly crossed between two
+// samples, so a long build leaves five entries rather than several hundred.
+func milestone(prev, now *float64) (int, bool) {
+	if now == nil {
+		return 0, false
+	}
+	was := 0.0
+	if prev != nil {
+		was = *prev
+	}
+	const step = 20.0
+	crossed := int(*now/step) * int(step)
+	if crossed == 0 || int(was/step)*int(step) >= crossed {
+		return 0, false
+	}
+	return crossed, true
+}
+
+// waitName renders a wait event for a person. PostgreSQL's own names are
+// precise but opaque; the common one is worth spelling out.
+func waitName(event string) string {
+	switch event {
+	case "":
+		return "an unnamed wait"
+	case "Lock:relation":
+		return "a lock on the table"
+	default:
+		return event
+	}
 }
