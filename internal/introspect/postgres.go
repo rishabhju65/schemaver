@@ -66,10 +66,19 @@ func snapshot(ctx context.Context, db Beginner, fn func(Querier) error) error {
 	return fn(tx)
 }
 
-// notSystem excludes system and temporary schemas, and anything an extension
-// owns. Applied to every query so the filters cannot drift apart.
+// notSystem excludes system and temporary schemas, anything an extension owns,
+// and schemaver's own bookkeeping. Applied to every query so the filters cannot
+// drift apart.
+//
+// schemaver_history is excluded because schemaver writes it into every database
+// it migrates. Counting it would make a database's identity depend on whether
+// schemaver had ever touched it — two databases with identical application
+// schemas would fingerprint differently — and comparing a migrated database
+// against an untouched one would propose dropping the very records that say
+// what has been applied.
 const notSystem = `
-	  n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+	  n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast',
+	                    'schemaver_history')
 	  AND n.nspname NOT LIKE 'pg\_temp\_%'
 	  AND n.nspname NOT LIKE 'pg\_toast\_temp\_%'`
 
