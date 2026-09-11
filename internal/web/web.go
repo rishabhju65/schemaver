@@ -107,7 +107,8 @@ func New(s *store.Store, setup *auth.Setup, openSignup bool, targets netguard.Po
 	srv := &Server{store: s, tmpl: map[string]*template.Template{},
 		setup: setup, openSignup: openSignup, targets: targets}
 	for _, page := range []string{"fleet", "history", "change", "drift", "login", "signup",
-		"instances", "instance_new", "instance", "requests", "request_new", "request"} {
+		"instances", "instance_new", "instance", "requests", "request_new", "request",
+		"activity"} {
 		t, err := template.New("layout").Funcs(funcs).ParseFS(files,
 			"templates/layout.html", "templates/"+page+".html")
 		if err != nil {
@@ -132,6 +133,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /database/{id}", s.requireUser(s.database))
 	mux.HandleFunc("GET /change/{id}", s.requireUser(s.change))
 	mux.HandleFunc("GET /drift", s.requireUser(s.drift))
+	mux.HandleFunc("GET /activity", s.requireUser(s.activity))
 	mux.HandleFunc("GET /instances", s.requireUser(s.instances))
 	mux.HandleFunc("GET /requests", s.requireUser(s.requests))
 	mux.HandleFunc("GET /requests/{id}", s.requireUser(s.request))

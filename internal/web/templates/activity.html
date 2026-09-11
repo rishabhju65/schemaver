@@ -1,0 +1,38 @@
+{{define "content"}}
+<h1>Activity</h1>
+<p class="sub">Everything that has happened, newest first — proposals,
+generated migrations, reviews, migrations running, databases drifting. The one
+place the whole system's behaviour is visible at once.</p>
+
+<div class="filters">
+  <a href="/activity" {{if eq .Level ""}}class="on"{{end}}>Everything</a>
+  <a href="/activity?level=warn" {{if eq .Level "warn"}}class="on"{{end}}>Warnings</a>
+  <a href="/activity?level=error" {{if eq .Level "error"}}class="on"{{end}}>Failures</a>
+</div>
+
+{{if not .Entries}}
+<div class="card pad">
+  <p class="sub">Nothing recorded yet{{if .Level}} at this level{{end}}.
+  {{if not .Level}}Activity appears here as databases are observed and change
+  requests move.{{end}}</p>
+</div>
+{{else}}
+<div class="card pad">
+  {{range .Entries}}
+  <div class="change">
+    <span class="fp">{{stamp .At}}</span>
+    <div>
+      <span class="{{if eq .Level "error"}}err{{else if eq .Level "warn"}}modified{{end}}">{{.Message}}</span>
+      <br><span class="fp">{{.Actor}}</span>
+      {{/* An entry whose message is the request's title — the one that opens
+           it — would otherwise print the same words twice on one line. */}}
+      {{if and .Request (ne .Message .Request)}} · <a href="/requests/{{.RequestID}}">{{.Request}}</a>{{end}}
+      {{if .Database}} · <span class="fp">{{.Database}}</span>{{end}}
+    </div>
+  </div>
+  {{end}}
+</div>
+<p class="hint">The most recent {{len .Entries}} entries. Older activity is kept
+and reachable from the request or database it concerns.</p>
+{{end}}
+{{end}}

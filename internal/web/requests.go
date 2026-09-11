@@ -175,3 +175,29 @@ func urlEscape(s string) string {
 }
 
 var _ = store.RequestSummary{}
+
+// activity renders the whole project's log, newest first.
+//
+// Filtered by level rather than by entity, because the question this page
+// answers is "what is going on" and the useful narrowing is "what needs me" —
+// which entity it concerns is what the request and database pages are for.
+func (s *Server) activity(w http.ResponseWriter, r *http.Request) {
+	scope, err := s.scoped(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	level := r.URL.Query().Get("level")
+	if level != "warn" && level != "error" {
+		level = ""
+	}
+	entries, err := scope.ActivityFeed(r.Context(), 200, level)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.render(w, r, "activity", "Activity", "activity", map[string]any{
+		"Entries": entries,
+		"Level":   level,
+	})
+}

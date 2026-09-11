@@ -24,7 +24,7 @@ func server(t *testing.T, setup *auth.Setup, openSignup bool) *Server {
 func TestTemplatesParse(t *testing.T) {
 	s := server(t, auth.Completed(), false)
 	for _, page := range []string{"fleet", "history", "change", "drift", "login", "signup",
-		"instances", "instance_new", "instance"} {
+		"instances", "instance_new", "instance", "requests", "request", "activity"} {
 		if s.tmpl[page] == nil {
 			t.Errorf("%s template missing", page)
 		}
@@ -38,7 +38,8 @@ func TestTemplatesParse(t *testing.T) {
 func TestPagesRequireAnAccount(t *testing.T) {
 	h := server(t, auth.Completed(), false).Handler()
 
-	for _, path := range []string{"/", "/history", "/drift", "/database/1", "/change/1"} {
+	for _, path := range []string{"/", "/history", "/drift", "/database/1", "/change/1",
+		"/activity", "/requests"} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)

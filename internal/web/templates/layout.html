@@ -20,6 +20,11 @@ header b{font-size:15px;letter-spacing:-.01em}
 header a{color:var(--dim);text-decoration:none}
 header a:hover,header a.on{color:var(--fg)}
 main{padding:24px;max-width:1180px;margin:0 auto}
+.filters{display:flex;gap:14px;margin:0 0 16px;flex-wrap:wrap}
+.filters a{color:var(--dim);text-decoration:none;font-size:13px;
+padding:3px 10px;border:1px solid var(--line);border-radius:999px}
+.filters a:hover{color:var(--fg)}
+.filters a.on{color:var(--fg);border-color:var(--fg)}
 h1{font-size:19px;margin:0 0 4px;letter-spacing:-.01em}
 .sub{color:var(--dim);margin:0 0 20px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:8px;overflow:hidden}
@@ -95,6 +100,7 @@ background:var(--bg);color:var(--fg);border:1px solid var(--line)}
   <a href="/drift" {{if eq .Nav "drift"}}class="on"{{end}}>Drift</a>
   <a href="/requests" {{if eq .Nav "requests"}}class="on"{{end}}>Changes</a>
   <a href="/instances" {{if eq .Nav "instances"}}class="on"{{end}}>Servers</a>
+  <a href="/activity" {{if eq .Nav "activity"}}class="on"{{end}}>Activity</a>
   {{if .Projects}}
   <form method="post" action="/project" style="display:inline">
     <input type="hidden" name="csrf" value="{{.CSRF}}">
