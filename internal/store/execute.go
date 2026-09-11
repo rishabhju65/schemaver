@@ -164,3 +164,104 @@ func (s *Store) SetRequestState(ctx context.Context, requestID int64, state, rea
 	}
 	return nil
 }
+
+// Progress is one observation of a running migration, taken from outside the
+// session doing the work.
+type Progress struct {
+	Step         int
+	WaitEvent    string
+	BlockedBy    []int32
+	BlockerQuery string
+	Phase        string
+	// Percent is set only where the engine reports real progress. Index builds
+	// do; table rewrites do not, and inventing a number for those would be
+	// worse than admitting there isn't one.
+	Percent *float64
+}
+
+// StartExecution opens an execution record and returns its id.
+func (s *Store) StartExecution(ctx context.Context, migrationID int64, statements int) (int64, error) {
+	var id int64
+	if err := s.pool.QueryRow(ctx, `
+		INSERT INTO schemaver.execution (migration_id, statements_total)
+		VALUES ($1, $2) RETURNING id`, migrationID, statements).Scan(&id); err != nil {
+		return 0, fmt.Errorf("start execution record: %w", err)
+	}
+	return id, nil
+}
+
+// BeginStep records that a statement has started.
+func (s *Store) BeginStep(ctx context.Context, executionID int64, ordinal int) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO schemaver.execution_step (execution_id, ordinal)
+		VALUES ($1, $2) ON CONFLICT (execution_id, ordinal) DO NOTHING`,
+		executionID, ordinal); err != nil {
+		return fmt.Errorf("record step start: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE schemaver.execution
+		   SET current_step = $2, current_started_at = now(),
+		       wait_event = NULL, blocked_by = NULL, blocker_query = NULL,
+		       progress_phase = NULL, progress_percent = NULL
+		 WHERE id = $1`, executionID, ordinal); err != nil {
+		return fmt.Errorf("set current step: %w", err)
+	}
+	return tx.Commit(ctx)
+}
+
+// FinishStep records a statement's outcome. A batch that rolled back finishes
+// every statement in it with the same error, because none of them took effect.
+func (s *Store) FinishStep(ctx context.Context, executionID int64, ordinal int, cause error) error {
+	var msg *string
+	if cause != nil {
+		text := cause.Error()
+		msg = &text
+	}
+	if _, err := s.pool.Exec(ctx, `
+		UPDATE schemaver.execution_step
+		   SET finished_at = now(), error = $3
+		 WHERE execution_id = $1 AND ordinal = $2`, executionID, ordinal, msg); err != nil {
+		return fmt.Errorf("record step finish: %w", err)
+	}
+	if cause == nil {
+		if _, err := s.pool.Exec(ctx, `
+			UPDATE schemaver.execution SET statements_done = statements_done + 1
+			 WHERE id = $1`, executionID); err != nil {
+			return fmt.Errorf("count statement: %w", err)
+		}
+	}
+	return nil
+}
+
+// RecordProgress stores one observation. Failures are the caller's to ignore:
+// losing a progress sample must never affect the migration itself.
+func (s *Store) RecordProgress(ctx context.Context, executionID int64, p Progress) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE schemaver.execution
+		   SET wait_event = NULLIF($2, ''), blocked_by = $3,
+		       blocker_query = NULLIF($4, ''),
+		       progress_phase = NULLIF($5, ''), progress_percent = $6,
+		       observed_at = now()
+		 WHERE id = $1 AND state = 'running'`,
+		executionID, p.WaitEvent, p.BlockedBy, p.BlockerQuery, p.Phase, p.Percent)
+	return err
+}
+
+// FinishExecution closes an execution record.
+func (s *Store) FinishExecution(ctx context.Context, executionID int64, state, reason, final string) error {
+	if _, err := s.pool.Exec(ctx, `
+		UPDATE schemaver.execution
+		   SET state = $2, reason = NULLIF($3, ''),
+		       final_fingerprint = NULLIF($4, ''), finished_at = now(),
+		       current_step = NULL, current_started_at = NULL
+		 WHERE id = $1`, executionID, state, reason, final); err != nil {
+		return fmt.Errorf("finish execution record: %w", err)
+	}
+	return nil
+}
