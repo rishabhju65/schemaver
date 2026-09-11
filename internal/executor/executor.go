@@ -129,10 +129,36 @@ func (e *Executor) Execute(ctx context.Context, x *store.Execution) (Outcome, er
 		}, nil
 	}
 
-	applied, runErr := e.apply(ctx, conn, x)
+	// From here on there is something to watch, so there is something to show.
+	executionID, err := e.store.StartExecution(ctx, x.MigrationID, len(x.Steps))
+	if err != nil {
+		return Outcome{}, err
+	}
+	finish := func(state, reason, final string) {
+		if ferr := e.store.FinishExecution(context.WithoutCancel(ctx),
+			executionID, state, reason, final); ferr != nil {
+			e.log.Warn("closing the execution record failed", "error", ferr)
+		}
+	}
+
+	// A second connection watches from outside. PostgreSQL reports nothing to
+	// the session executing DDL — it is blocked inside the statement — so lock
+	// waits and index-build progress have to be read by somebody else asking.
+	if pid, perr := backendPID(ctx, conn); perr == nil {
+		stopObserving := e.observe(x.DSN, executionID, pid)
+		defer stopObserving()
+	} else {
+		e.log.Debug("could not determine the backend pid; progress will not be reported",
+			"error", perr)
+	}
+
+	applied, runErr := e.apply(ctx, conn, executionID, x)
 
 	after, readErr := readFingerprint(ctx, conn)
 	if readErr != nil {
+		finish("needs_attention", fmt.Sprintf(
+			"ran %d of %d statements, then could not read the schema back: %v",
+			applied, len(x.Steps), readErr), "")
 		// We cannot say what state the database is in, which is the one answer
 		// that must never be guessed.
 		return Outcome{
@@ -147,6 +173,7 @@ func (e *Executor) Execute(ctx context.Context, x *store.Execution) (Outcome, er
 	switch {
 	case runErr != nil && after == x.From:
 		// Rolled back cleanly. The database is exactly where it started.
+		finish("failed", runErr.Error(), string(after))
 		return Outcome{
 			State: StateFailed, StepsApplied: applied, Final: after, Retryable: true,
 			Reason: fmt.Sprintf("statement %d failed and rolled back; the database is unchanged: %v",
@@ -156,6 +183,7 @@ func (e *Executor) Execute(ctx context.Context, x *store.Execution) (Outcome, er
 	case runErr != nil:
 		// Partly applied. Never resolved automatically (D-013): rolling forward
 		// or back on its own turns a contained problem into an incident.
+		finish("needs_attention", runErr.Error(), string(after))
 		return Outcome{
 			State: StateNeedsAttention, StepsApplied: applied, Final: after,
 			Reason: fmt.Sprintf(
@@ -169,6 +197,9 @@ func (e *Executor) Execute(ctx context.Context, x *store.Execution) (Outcome, er
 		// Everything ran and the result is wrong. Every upstream gate passed —
 		// the shadow proof, the precondition — so either something changed out
 		// of band mid-execution or an assumption is broken.
+		finish("needs_attention", fmt.Sprintf(
+			"every statement succeeded but the schema is %s, not the declared %s",
+			after.Short(), x.To.Short()), string(after))
 		return Outcome{
 			State: StateNeedsAttention, StepsApplied: applied, Final: after,
 			Reason: fmt.Sprintf(
@@ -187,6 +218,7 @@ func (e *Executor) Execute(ctx context.Context, x *store.Execution) (Outcome, er
 			"database", x.DatabaseName, "error", err)
 	}
 
+	finish("completed", fmt.Sprintf("applied %d statement(s)", applied), string(after))
 	return Outcome{
 		State: StateCompleted, StepsApplied: applied, Final: after,
 		Reason: fmt.Sprintf("applied %d statement(s); the database is at %s",
@@ -200,12 +232,16 @@ func (e *Executor) Execute(ctx context.Context, x *store.Execution) (Outcome, er
 // the migration as possible is atomic. A statement that refuses to run in a
 // transaction — a concurrent index build — breaks the batch and runs alone,
 // which is exactly the atomicity gap D-006 requires review to show.
-func (e *Executor) apply(ctx context.Context, conn *pgx.Conn, x *store.Execution) (int, error) {
+func (e *Executor) apply(ctx context.Context, conn *pgx.Conn, executionID int64, x *store.Execution) (int, error) {
 	applied := 0
 
 	for i := 0; i < len(x.Steps); {
 		if !x.Steps[i].Transactional {
-			if err := e.runStandalone(ctx, conn, x.Steps[i]); err != nil {
+			st := x.Steps[i]
+			e.mark(ctx, executionID, st.Ordinal)
+			err := e.runStandalone(ctx, conn, st)
+			e.markDone(ctx, executionID, st.Ordinal, err)
+			if err != nil {
 				return applied, err
 			}
 			applied++
@@ -218,7 +254,7 @@ func (e *Executor) apply(ctx context.Context, conn *pgx.Conn, x *store.Execution
 		for j < len(x.Steps) && x.Steps[j].Transactional {
 			j++
 		}
-		n, err := e.runBatch(ctx, conn, x.Steps[i:j])
+		n, err := e.runBatch(ctx, conn, executionID, x.Steps[i:j])
 		applied += n
 		if err != nil {
 			return applied, err
@@ -228,7 +264,22 @@ func (e *Executor) apply(ctx context.Context, conn *pgx.Conn, x *store.Execution
 	return applied, nil
 }
 
-func (e *Executor) runBatch(ctx context.Context, conn *pgx.Conn, steps []store.Step) (int, error) {
+// mark and markDone keep the progress record current. They never return an
+// error: losing a progress update must not affect the migration, and a caller
+// forced to handle that error would have nothing useful to do with it.
+func (e *Executor) mark(ctx context.Context, executionID int64, ordinal int) {
+	if err := e.store.BeginStep(ctx, executionID, ordinal); err != nil {
+		e.log.Debug("recording step start failed", "step", ordinal, "error", err)
+	}
+}
+
+func (e *Executor) markDone(ctx context.Context, executionID int64, ordinal int, cause error) {
+	if err := e.store.FinishStep(context.WithoutCancel(ctx), executionID, ordinal, cause); err != nil {
+		e.log.Debug("recording step finish failed", "step", ordinal, "error", err)
+	}
+}
+
+func (e *Executor) runBatch(ctx context.Context, conn *pgx.Conn, executionID int64, steps []store.Step) (int, error) {
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("begin: %w", err)
@@ -238,17 +289,27 @@ func (e *Executor) runBatch(ctx context.Context, conn *pgx.Conn, steps []store.S
 		return 0, err
 	}
 
-	for n, st := range steps {
+	for _, st := range steps {
 		e.log.Info("applying", "step", st.Ordinal, "change", st.ChangeID)
+		e.mark(ctx, executionID, st.Ordinal)
 		if _, err := tx.Exec(ctx, st.SQL); err != nil {
 			_ = tx.Rollback(ctx)
-			// Nothing in the batch took effect, so none of it counts as applied.
-			return 0, fmt.Errorf("step %d (%s): %w", st.Ordinal, st.ChangeID, err)
+			failure := fmt.Errorf("step %d (%s): %w", st.Ordinal, st.ChangeID, err)
+			// Nothing in the batch took effect, so every statement in it failed
+			// — including the ones that had appeared to succeed.
+			for _, rolled := range steps {
+				if rolled.Ordinal <= st.Ordinal {
+					e.markDone(ctx, executionID, rolled.Ordinal, failure)
+				}
+			}
+			return 0, failure
 		}
-		_ = n
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return 0, fmt.Errorf("commit: %w", err)
+	}
+	for _, st := range steps {
+		e.markDone(ctx, executionID, st.Ordinal, nil)
 	}
 	return len(steps), nil
 }
