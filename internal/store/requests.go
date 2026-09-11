@@ -96,9 +96,27 @@ type RequestDetail struct {
 
 	Threads  []Thread
 	Approval *ApprovalState
-	// Execution is the most recent run of this migration, live or finished, or
-	// nil if it has never been executed.
-	Execution *ExecutionView
+	// Executions is every attempt at this migration, newest first, empty if it
+	// has never been run. Every attempt, because a run that was blocked and
+	// rolled back is precisely what a viewer needs to see, and showing only the
+	// last one hides it behind the retry that succeeded.
+	Executions []*ExecutionView
+}
+
+// Execution is the most recent attempt, or nil if there has never been one.
+func (d *RequestDetail) Execution() *ExecutionView {
+	if len(d.Executions) == 0 {
+		return nil
+	}
+	return d.Executions[0]
+}
+
+// Prior is every attempt before the most recent one.
+func (d *RequestDetail) Prior() []*ExecutionView {
+	if len(d.Executions) < 2 {
+		return nil
+	}
+	return d.Executions[1:]
 }
 
 // riskOrder ranks classes by how much attention they deserve.
@@ -196,7 +214,7 @@ func (s *Scope) Request(ctx context.Context, id int64) (*RequestDetail, error) {
 	if err != nil {
 		return nil, err
 	}
-	if d.Execution, err = s.LatestExecution(ctx, id); err != nil {
+	if d.Executions, err = s.Executions(ctx, id); err != nil {
 		return nil, err
 	}
 	for _, t := range d.Threads {
@@ -258,7 +276,10 @@ type ExecutionView struct {
 	Started time.Time
 	Ended   *time.Time
 	Reason  string
-	Final   string
+	// Final is the fingerprint the database ended at, typed as a version rather
+	// than a string so it renders through the same shortener as every other
+	// fingerprint instead of needing its own.
+	Final schema.Version
 
 	CurrentStep    *int
 	CurrentStarted *time.Time
@@ -270,8 +291,22 @@ type ExecutionView struct {
 	Percent      *float64
 	ObservedAt   *time.Time
 
-	Steps []ExecutionStep
+	Steps  []ExecutionStep
+	Events []EventView
 }
+
+// EventView is one entry in an execution's activity log.
+type EventView struct {
+	At      time.Time
+	Ordinal *int
+	Level   string
+	Kind    string
+	Message string
+	Detail  string
+}
+
+// Notable reports an entry worth surfacing without reading the whole log.
+func (e EventView) Notable() bool { return e.Level != "info" }
 
 // Running reports whether this execution is still in flight, which is what
 // decides whether the page should keep refreshing.
@@ -298,65 +333,112 @@ func (v *ExecutionView) CurrentElapsed() time.Duration {
 	return time.Since(*v.CurrentStarted)
 }
 
-// LatestExecution returns the most recent execution of a request's current
-// migration, or nil if it has never been run.
-func (s *Scope) LatestExecution(ctx context.Context, requestID int64) (*ExecutionView, error) {
+// Executions returns every attempt at a request's current migration, newest
+// first.
+//
+// Three queries rather than three per attempt: the attempts, then their
+// statements, then their events, each fanned out by execution in memory. A
+// migration that was blocked, rolled back and retried is the normal case rather
+// than the exception, so this path should not grow with the number of retries.
+func (s *Scope) Executions(ctx context.Context, requestID int64) ([]*ExecutionView, error) {
 	if err := s.ownsRequest(ctx, requestID); err != nil {
 		return nil, err
 	}
 
-	var v ExecutionView
-	var reason, final, wait, blocker, phase *string
-	err := s.store.pool.QueryRow(ctx, `
+	rows, err := s.store.pool.Query(ctx, `
 		SELECT e.id, e.state, e.statements_total, e.statements_done,
-		       e.started_at, e.finished_at, e.reason, e.final_fingerprint,
+		       e.started_at, e.finished_at, COALESCE(e.reason, ''),
+		       COALESCE(e.final_fingerprint, ''),
 		       e.current_step, e.current_started_at,
-		       e.wait_event, e.blocked_by, e.blocker_query,
-		       e.progress_phase, e.progress_percent, e.observed_at
+		       COALESCE(e.wait_event, ''), e.blocked_by,
+		       COALESCE(e.blocker_query, ''),
+		       COALESCE(e.progress_phase, ''), e.progress_percent, e.observed_at
 		  FROM schemaver.execution e
 		  JOIN schemaver.migration m ON m.id = e.migration_id
 		 WHERE m.change_request_id = $1 AND m.superseded_at IS NULL
-		 ORDER BY e.started_at DESC LIMIT 1`, requestID).
-		Scan(&v.ID, &v.State, &v.Total, &v.Done, &v.Started, &v.Ended,
-			&reason, &final, &v.CurrentStep, &v.CurrentStarted,
-			&wait, &v.BlockedBy, &blocker, &phase, &v.Percent, &v.ObservedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil
-	}
+		 ORDER BY e.started_at DESC, e.id DESC`, requestID)
 	if err != nil {
-		return nil, fmt.Errorf("load execution: %w", err)
+		return nil, fmt.Errorf("load executions: %w", err)
 	}
-	for target, src := range map[*string]*string{
-		&v.Reason: reason, &v.Final: final, &v.WaitEvent: wait,
-		&v.BlockerQuery: blocker, &v.Phase: phase,
-	} {
-		if src != nil {
-			*target = *src
+	defer rows.Close()
+
+	var views []*ExecutionView
+	byID := map[int64]*ExecutionView{}
+	var ids []int64
+	for rows.Next() {
+		var v ExecutionView
+		// Scanned as a string and converted, the way From and To are: the
+		// driver is not asked to know about our named types.
+		var final string
+		if err := rows.Scan(&v.ID, &v.State, &v.Total, &v.Done,
+			&v.Started, &v.Ended, &v.Reason, &final,
+			&v.CurrentStep, &v.CurrentStarted,
+			&v.WaitEvent, &v.BlockedBy, &v.BlockerQuery,
+			&v.Phase, &v.Percent, &v.ObservedAt); err != nil {
+			return nil, fmt.Errorf("scan execution: %w", err)
 		}
+		v.Final = schema.Version(final)
+		views = append(views, &v)
+		byID[v.ID] = &v
+		ids = append(ids, v.ID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(views) == 0 {
+		return nil, nil
 	}
 
 	// Joined against the statements themselves so the view shows what ran, not
 	// merely how many.
-	rows, err := s.store.pool.Query(ctx, `
-		SELECT st.ordinal, st.sql, st.change_id,
+	steps, err := s.store.pool.Query(ctx, `
+		SELECT e.id, st.ordinal, st.sql, st.change_id,
 		       es.started_at, es.finished_at, COALESCE(es.error, '')
-		  FROM schemaver.migration_step st
-		  JOIN schemaver.execution e ON e.id = $1
+		  FROM schemaver.execution e
+		  JOIN schemaver.migration_step st ON st.migration_id = e.migration_id
 		  LEFT JOIN schemaver.execution_step es
 		         ON es.execution_id = e.id AND es.ordinal = st.ordinal
-		 WHERE st.migration_id = e.migration_id
-		 ORDER BY st.ordinal`, v.ID)
+		 WHERE e.id = ANY($1)
+		 ORDER BY e.id, st.ordinal`, ids)
 	if err != nil {
 		return nil, fmt.Errorf("load execution steps: %w", err)
 	}
-	defer rows.Close()
-	for rows.Next() {
+	defer steps.Close()
+	for steps.Next() {
+		var id int64
 		var st ExecutionStep
-		if err := rows.Scan(&st.Ordinal, &st.SQL, &st.ChangeID,
+		if err := steps.Scan(&id, &st.Ordinal, &st.SQL, &st.ChangeID,
 			&st.Started, &st.Finished, &st.Error); err != nil {
 			return nil, fmt.Errorf("scan execution step: %w", err)
 		}
-		v.Steps = append(v.Steps, st)
+		if v := byID[id]; v != nil {
+			v.Steps = append(v.Steps, st)
+		}
 	}
-	return &v, rows.Err()
+	if err := steps.Err(); err != nil {
+		return nil, err
+	}
+
+	events, err := s.store.pool.Query(ctx, `
+		SELECT execution_id, at, ordinal, level, kind, message,
+		       COALESCE(detail::text, '')
+		  FROM schemaver.execution_event
+		 WHERE execution_id = ANY($1)
+		 ORDER BY execution_id, id`, ids)
+	if err != nil {
+		return nil, fmt.Errorf("load execution events: %w", err)
+	}
+	defer events.Close()
+	for events.Next() {
+		var id int64
+		var e EventView
+		if err := events.Scan(&id, &e.At, &e.Ordinal, &e.Level,
+			&e.Kind, &e.Message, &e.Detail); err != nil {
+			return nil, fmt.Errorf("scan execution event: %w", err)
+		}
+		if v := byID[id]; v != nil {
+			v.Events = append(v.Events, e)
+		}
+	}
+	return views, events.Err()
 }

@@ -97,7 +97,7 @@ func (s *Server) request(w http.ResponseWriter, r *http.Request) {
 	s.render(w, r, "request", detail.Title, "requests", map[string]any{
 		"R": detail,
 		// Only while something is actually in flight.
-		"Refresh": detail.Execution != nil && detail.Execution.Running(),
+		"Refresh": detail.Execution() != nil && detail.Execution().Running(),
 		// The author cannot approve their own request unless they are the only
 		// administrator, so the button is hidden rather than offered and refused.
 		"CanDecide": user != nil && user.Role.CanWrite() &&

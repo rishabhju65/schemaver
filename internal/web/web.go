@@ -45,6 +45,10 @@ type Server struct {
 // funcs are the helpers templates use to render values a person can read.
 var funcs = template.FuncMap{
 	"short": func(v schema.Version) string { return v.Short() },
+	// clock renders the wall-clock time of a log entry. Seconds are kept: two
+	// events a second apart is the difference between a statement running and a
+	// statement waiting.
+	"clock": func(t time.Time) string { return t.Format("15:04:05") },
 	// dur renders a duration the way a person reading a progress line would
 	// want it: coarse enough to scan, precise enough to see a statement that is
 	// taking longer than it should.

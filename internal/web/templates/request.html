@@ -143,10 +143,65 @@ now, while the choice is still open — not when it is needed.</p>
     {{end}}
   </div>
 
+  {{if .Events}}
+  {{/* The narrative, beside the state. The panel above says what is happening
+       now; this says what happened — which is the only thing that can tell a
+       forty-minute index build from eleven minutes stuck behind a report. */}}
+  <h3 style="margin:20px 0 6px">Activity</h3>
+  <p class="sub">Transitions, not samples: an entry per change in what was
+  observed, so a long run reads as a handful of moments rather than hundreds of
+  identical lines.</p>
+  <div class="log">
+    {{range .Events}}
+    <div class="change">
+      <span class="fp">{{clock .At}}</span>
+      <div>
+        {{if .Ordinal}}<span class="fp">statement {{.Ordinal}}</span> {{end}}
+        <span class="{{if eq .Level "error"}}err{{else if eq .Level "warn"}}modified{{end}}">{{.Message}}</span>
+      </div>
+    </div>
+    {{end}}
+  </div>
+  {{end}}
+
   {{if .Reason}}<p class="sub" style="margin-top:12px">{{.Reason}}</p>{{end}}
   {{if .Running}}<p class="hint" style="margin-top:10px">This page refreshes
   while the migration is running.</p>{{end}}
 </div>
+{{end}}
+
+{{with $r.Prior}}
+{{/* Earlier attempts, which the page used to hide behind the latest one. A
+     migration that was blocked, rolled back and retried is the normal case, and
+     the blocked attempt is the half worth reading. */}}
+<h2 style="margin-top:26px">Earlier attempts</h2>
+<p class="sub">A blocked migration gives up and is retried. Each attempt kept
+separately, because the one that failed is usually the one that explains
+something.</p>
+{{range .}}
+<div class="card pad" style="margin-top:10px">
+  <div class="gates">
+    <span class="{{if eq .State "completed"}}added{{else}}removed{{end}}">{{.State}}</span>
+    <span class="fp">{{.Done}} of {{.Total}} applied</span>
+    <span class="fp">{{dur .Elapsed}}</span>
+    <span class="fp">{{clock .Started}}</span>
+  </div>
+  {{if .Reason}}<p class="sub" style="margin-top:10px">{{.Reason}}</p>{{end}}
+  {{if .Events}}
+  <div class="log" style="margin-top:10px">
+    {{range .Events}}
+    <div class="change">
+      <span class="fp">{{clock .At}}</span>
+      <div>
+        {{if .Ordinal}}<span class="fp">statement {{.Ordinal}}</span> {{end}}
+        <span class="{{if eq .Level "error"}}err{{else if eq .Level "warn"}}modified{{end}}">{{.Message}}</span>
+      </div>
+    </div>
+    {{end}}
+  </div>
+  {{end}}
+</div>
+{{end}}
 {{end}}
 
 <h2 style="margin-top:26px">Discussion</h2>
