@@ -4,6 +4,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math/rand"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/rishabhju65/schemaver/internal/drift"
+	"github.com/rishabhju65/schemaver/internal/executor"
 	"github.com/rishabhju65/schemaver/internal/introspect"
 	"github.com/rishabhju65/schemaver/internal/schema"
 	"github.com/rishabhju65/schemaver/internal/store"
@@ -31,11 +33,17 @@ type Config struct {
 	// Lease is how long a claimed job is held before another worker may reclaim
 	// it. It must exceed the slowest expected introspection.
 	Lease time.Duration
-	// Timeout bounds a single job.
+	// Timeout bounds a single observation.
 	Timeout time.Duration
-	// Concurrency is how many jobs this worker runs at once, across all
-	// instances.
+	// ExecutionTimeout bounds a single migration. Generous, because a concurrent
+	// index build on a large table legitimately takes hours.
+	ExecutionTimeout time.Duration
+	// Concurrency is how many observation jobs this worker runs at once.
 	Concurrency int
+	// ExecutionConcurrency is a separate pool for migrations. Separate because a
+	// migration can hold a worker for an hour: sharing one pool would let a
+	// handful of long migrations stop drift detection entirely for that hour.
+	ExecutionConcurrency int
 	// Budget bounds how much work one instance may carry at once, derived from
 	// its observed connection headroom rather than fixed.
 	Budget store.Budget
@@ -54,8 +62,14 @@ func (c *Config) setDefaults() {
 	if c.Timeout <= 0 {
 		c.Timeout = 5 * time.Minute
 	}
+	if c.ExecutionTimeout <= 0 {
+		c.ExecutionTimeout = 4 * time.Hour
+	}
 	if c.Concurrency <= 0 {
 		c.Concurrency = 8
+	}
+	if c.ExecutionConcurrency <= 0 {
+		c.ExecutionConcurrency = 4
 	}
 	if c.Budget.Ceiling == 0 {
 		c.Budget = store.DefaultBudget()
@@ -80,6 +94,7 @@ type Worker struct {
 	store *store.Store
 	cfg   Config
 	log   *slog.Logger
+	exec  *executor.Executor
 }
 
 func New(s *store.Store, cfg Config, log *slog.Logger) *Worker {
@@ -87,7 +102,7 @@ func New(s *store.Store, cfg Config, log *slog.Logger) *Worker {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Worker{store: s, cfg: cfg, log: log}
+	return &Worker{store: s, cfg: cfg, log: log, exec: executor.New(s, log)}
 }
 
 // Run schedules due work and drains the queue until ctx is cancelled.
@@ -104,7 +119,14 @@ func (w *Worker) Run(ctx context.Context) error {
 		wg.Add(1)
 		go func(n int) {
 			defer wg.Done()
-			w.drainLoop(ctx, fmt.Sprintf("%s/%d", w.cfg.ID, n))
+			w.drainLoop(ctx, fmt.Sprintf("%s/obs-%d", w.cfg.ID, n), store.ObservationKinds)
+		}(i)
+	}
+	for i := 0; i < w.cfg.ExecutionConcurrency; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			w.drainLoop(ctx, fmt.Sprintf("%s/exec-%d", w.cfg.ID, n), store.ExecutionKinds)
 		}(i)
 	}
 
@@ -141,12 +163,12 @@ func (w *Worker) schedule(ctx context.Context) {
 
 // drainLoop is one concurrent claimant. Polls are jittered so that idle workers
 // do not all hit the claim query on the same tick.
-func (w *Worker) drainLoop(ctx context.Context, id string) {
+func (w *Worker) drainLoop(ctx context.Context, id string, kinds []string) {
 	for {
 		if ctx.Err() != nil {
 			return
 		}
-		worked := w.drainOnce(ctx, id)
+		worked := w.drainOnce(ctx, id, kinds)
 		if worked {
 			continue
 		}
@@ -160,8 +182,8 @@ func (w *Worker) drainLoop(ctx context.Context, id string) {
 }
 
 // drainOnce claims and runs a single job, reporting whether it found one.
-func (w *Worker) drainOnce(ctx context.Context, id string) bool {
-	job, err := w.store.ClaimJob(ctx, id, w.cfg.Lease, w.cfg.Budget)
+func (w *Worker) drainOnce(ctx context.Context, id string, kinds []string) bool {
+	job, err := w.store.ClaimJob(ctx, id, w.cfg.Lease, w.cfg.Budget, kinds)
 	if err == store.ErrNoJob {
 		return false
 	}
@@ -172,8 +194,21 @@ func (w *Worker) drainOnce(ctx context.Context, id string) bool {
 		return false
 	}
 
-	jobCtx, cancel := context.WithTimeout(ctx, w.cfg.Timeout)
+	// A migration may run far longer than an observation, and must not be cut
+	// short by the observation timeout.
+	timeout := w.cfg.Timeout
+	if job.Kind == store.KindExecute {
+		timeout = w.cfg.ExecutionTimeout
+	}
+	jobCtx, cancel := context.WithTimeout(ctx, timeout)
+
+	// Hold the lease for as long as the work takes. Without this a long
+	// migration has its job reclaimed while still running: the advisory lock
+	// stops a second worker doing damage, but the bookkeeping goes wrong and the
+	// interface then lies about what is happening.
+	stopHeartbeat := w.heartbeat(jobCtx, job.ID, id)
 	runErr := w.handle(jobCtx, job)
+	stopHeartbeat()
 	cancel()
 
 	if runErr != nil {
@@ -188,15 +223,103 @@ func (w *Worker) drainOnce(ctx context.Context, id string) bool {
 	return true
 }
 
+// heartbeat renews a claimed job's lease until the returned function is called.
+//
+// A failure to renew means the lease already lapsed and somebody else holds the
+// job, so the loop stops rather than fighting for it. The advisory lock is what
+// prevents damage in that window; this only keeps the record honest.
+func (w *Worker) heartbeat(ctx context.Context, jobID int64, workerID string) func() {
+	done := make(chan struct{})
+	interval := w.cfg.Lease / 3
+	if interval < time.Second {
+		interval = time.Second
+	}
+	go func() {
+		tick := time.NewTicker(interval)
+		defer tick.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ctx.Done():
+				return
+			case <-tick.C:
+				held, err := w.store.RenewLease(context.WithoutCancel(ctx), jobID, workerID, w.cfg.Lease)
+				if err != nil {
+					w.log.Warn("renewing lease failed", "job", jobID, "error", err)
+					continue
+				}
+				if !held {
+					w.log.Warn("lease lapsed and was taken; stopping renewal", "job", jobID)
+					return
+				}
+			}
+		}
+	}()
+	return func() { close(done) }
+}
+
 func (w *Worker) handle(ctx context.Context, job *store.Job) error {
 	switch job.Kind {
-	case "discover":
+	case store.KindDiscover:
 		return w.discover(ctx, job.TargetID)
-	case "observe":
+	case store.KindObserve:
 		return w.observe(ctx, job.TargetID)
+	case store.KindExecute:
+		return w.execute(ctx, job.TargetID)
 	default:
 		return fmt.Errorf("unknown job kind %q", job.Kind)
 	}
+}
+
+// execute applies a migration and records where it ended up.
+//
+// The outcome is always recorded, including when it is one nobody wants. A
+// migration that halted ambiguously must leave a visible NEEDS_ATTENTION and a
+// reason, never an absence.
+func (w *Worker) execute(ctx context.Context, migrationID int64) error {
+	x, err := w.store.LoadExecution(ctx, migrationID)
+	if err != nil {
+		return err
+	}
+	w.log.Info("executing migration", "migration", migrationID,
+		"database", x.DatabaseName, "statements", len(x.Steps),
+		"from", x.From.Short(), "to", x.To.Short())
+
+	outcome, err := w.exec.Execute(ctx, x)
+	if err != nil {
+		// We could not get far enough to have an outcome. Record that rather
+		// than leaving the request looking as though it is still running.
+		_ = w.store.SetRequestState(context.WithoutCancel(ctx), x.RequestID,
+			executor.StateNeedsAttention,
+			fmt.Sprintf("execution could not be carried out: %v", err))
+		return err
+	}
+
+	if serr := w.store.SetRequestState(context.WithoutCancel(ctx), x.RequestID,
+		outcome.State, outcome.Reason); serr != nil {
+		w.log.Error("recording the outcome failed", "migration", migrationID, "error", serr)
+	}
+
+	switch outcome.State {
+	case executor.StateCompleted:
+		w.log.Info("migration applied", "migration", migrationID,
+			"database", x.DatabaseName, "version", outcome.Final.Short())
+	case executor.StateNeedsAttention:
+		w.log.Error("MIGRATION HALTED — a human must decide",
+			"migration", migrationID, "database", x.DatabaseName,
+			"detail", outcome.Reason)
+	default:
+		w.log.Warn("migration did not apply", "migration", migrationID,
+			"state", outcome.State, "detail", outcome.Reason)
+	}
+
+	// A retryable failure is the job's business; anything else is settled and
+	// must not be attempted again automatically.
+	if outcome.Retryable {
+		return errors.New(outcome.Reason)
+	}
+	return nil
 }
 
 // discover reconciles the databases known on an instance against what it reports.

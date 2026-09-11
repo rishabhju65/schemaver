@@ -380,7 +380,23 @@ func DefaultBudget() Budget {
 //
 // Instances at capacity are skipped, never waited on, so a saturated instance
 // never blocks work on any other.
-func (s *Store) ClaimJob(ctx context.Context, workerID string, lease time.Duration, budget Budget) (*Job, error) {
+// Kinds of work, kept as constants so the two pools cannot drift apart from the
+// strings the scheduler enqueues.
+const (
+	KindObserve  = "observe"
+	KindDiscover = "discover"
+	KindExecute  = "execute"
+)
+
+// ObservationKinds is the cheap, short work.
+var ObservationKinds = []string{KindObserve, KindDiscover}
+
+// ExecutionKinds is the long work. Claimed by a separate pool: a migration can
+// hold a worker for an hour, and eight of them sharing one pool with observation
+// would stop drift detection for that hour.
+var ExecutionKinds = []string{KindExecute}
+
+func (s *Store) ClaimJob(ctx context.Context, workerID string, lease time.Duration, budget Budget, kinds []string) (*Job, error) {
 	if budget.Floor < 1 {
 		budget.Floor = 1
 	}
@@ -403,8 +419,21 @@ func (s *Store) ClaimJob(ctx context.Context, workerID string, lease time.Durati
 		 WHERE id = (
 		     SELECT j.id FROM schemaver.job j
 		      LEFT JOIN schemaver.instance i ON i.id = j.instance_id
-		      WHERE ((j.state = 'pending' AND j.run_after <= now())
+		      WHERE j.kind = ANY($6)
+		        AND ((j.state = 'pending' AND j.run_after <= now())
 		          OR (j.state = 'running' AND j.lease_until < now()))
+		        -- A migration is claimable only while its starting point still
+		        -- matches the database. Without this, a migration queued behind
+		        -- another would be claimed, fail its precondition, back off and
+		        -- retry — thrashing the queue instead of simply waiting. Ordering
+		        -- becomes emergent rather than something the scheduler tracks.
+		        AND (j.kind <> 'execute' OR EXISTS (
+		              SELECT 1 FROM schemaver.migration m
+		                JOIN schemaver.change_request r ON r.id = m.change_request_id
+		                JOIN schemaver.database d ON d.id = r.database_id
+		               WHERE m.id = j.target_id
+		                 AND m.superseded_at IS NULL
+		                 AND d.current_fingerprint = m.from_fingerprint))
 		        AND (j.instance_id IS NULL OR (
 		              SELECT COALESCE(sum(r.weight), 0) FROM schemaver.job r
 		               WHERE r.instance_id = j.instance_id
@@ -420,7 +449,7 @@ func (s *Store) ClaimJob(ctx context.Context, workerID string, lease time.Durati
 		      FOR UPDATE OF j SKIP LOCKED
 		      LIMIT 1)
 		RETURNING id, kind, target_kind, target_id, instance_id, attempts`,
-		workerID, lease.String(), budget.Floor, budget.Ceiling, budget.Fraction).
+		workerID, lease.String(), budget.Floor, budget.Ceiling, budget.Fraction, kinds).
 		Scan(&j.ID, &j.Kind, &targetKind, &targetID, &instanceID, &j.Attempts)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNoJob
@@ -517,4 +546,26 @@ func (s *Store) RecordCapacity(ctx context.Context, instanceID int64, max, reser
 		return fmt.Errorf("record capacity: %w", err)
 	}
 	return nil
+}
+
+// RenewLease extends a claimed job's hold.
+//
+// Needed because a migration can run for far longer than any sensible lease. A
+// forty-minute index build under a ten-minute lease would have its job reclaimed
+// while still executing: the advisory lock stops the second worker doing damage,
+// but the bookkeeping goes wrong and the interface then lies about what is
+// happening.
+//
+// Reports false when the job is no longer ours, which means our lease already
+// lapsed and somebody else has it — the caller should stop.
+func (s *Store) RenewLease(ctx context.Context, jobID int64, workerID string, lease time.Duration) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE schemaver.job
+		   SET lease_until = now() + $3::interval
+		 WHERE id = $1 AND worker_id = $2 AND state = 'running'`,
+		jobID, workerID, lease.String())
+	if err != nil {
+		return false, fmt.Errorf("renew lease: %w", err)
+	}
+	return tag.RowsAffected() == 1, nil
 }
