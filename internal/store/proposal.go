@@ -145,11 +145,11 @@ func (s *Scope) GenerateMigration(ctx context.Context, requestID int64) (int64, 
 	if err := tx.QueryRow(ctx, `
 		INSERT INTO schemaver.migration
 		    (change_request_id, from_fingerprint, to_fingerprint, changes,
-		     rename_candidates, irreversible_reason)
-		VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''))
+		     rename_candidates, irreversible_reason, weight)
+		VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), $7)
 		RETURNING id`,
 		requestID, *fromFP, *toFP, changesJSON, renamesJSON,
-		irreversibleReason(result)).Scan(&migrationID); err != nil {
+		irreversibleReason(result), diff.Weight(result.Changes)).Scan(&migrationID); err != nil {
 		return 0, fmt.Errorf("store migration: %w", err)
 	}
 
