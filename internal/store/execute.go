@@ -17,7 +17,7 @@ var ErrNotExecutable = errors.New("this migration is not executable")
 // The gate is re-evaluated here rather than trusted from whenever the page was
 // rendered: an approval can be withdrawn, a reviewer can object, and the
 // migration can be regenerated between a person seeing a button and pressing it.
-func (s *Scope) EnqueueExecution(ctx context.Context, requestID int64) error {
+func (s *Scope) EnqueueExecution(ctx context.Context, actorID, requestID int64) error {
 	if err := s.requireWrite(); err != nil {
 		return err
 	}
@@ -69,6 +69,13 @@ func (s *Scope) EnqueueExecution(ctx context.Context, requestID int64) error {
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
+	s.record(ctx, Info("execution.queued",
+		"queued for execution; a worker will claim it once the database still "+
+			"matches where this migration starts").
+		By(actorID).
+		OnRequest(requestID).
+		OnMigration(state.MigrationID).
+		With(map[string]any{"weight": weight}))
 	return nil
 }
 

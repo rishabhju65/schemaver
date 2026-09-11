@@ -53,7 +53,7 @@ func TestProposeReviewApprove(t *testing.T) {
 	}
 	t.Logf("change request %d", requestID)
 
-	migrationID, err := scope.GenerateMigration(ctx, requestID)
+	migrationID, err := scope.GenerateMigration(ctx, userID, requestID)
 	if err != nil {
 		t.Fatalf("GenerateMigration: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestProposeReviewApprove(t *testing.T) {
 
 	// Regenerating supersedes the migration, and the approval stops matching
 	// without anything having to withdraw it.
-	if _, err := scope.GenerateMigration(ctx, requestID); err != nil {
+	if _, err := scope.GenerateMigration(ctx, userID, requestID); err != nil {
 		t.Fatalf("regenerate: %v", err)
 	}
 	state, err = scope.ApprovalState(ctx, requestID)

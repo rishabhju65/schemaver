@@ -68,7 +68,7 @@ func (s *Server) requestNew(w http.ResponseWriter, r *http.Request) {
 		s.render(w, r, "request_new", "Propose a change", "requests", data(err))
 		return
 	}
-	if _, err := scope.GenerateMigration(r.Context(), id); err != nil {
+	if _, err := scope.GenerateMigration(r.Context(), user.ID, id); err != nil {
 		// The request exists; generation failed. Show it rather than hiding the
 		// request, so the author can see the reason on the page it belongs to.
 		http.Redirect(w, r, "/requests/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
@@ -149,13 +149,13 @@ func (s *Server) act(w http.ResponseWriter, r *http.Request) {
 		actErr = scope.ResolveThread(r.Context(), threadID, user.ID,
 			r.FormValue("resolution"))
 	case "regenerate":
-		_, actErr = scope.GenerateMigration(r.Context(), id)
+		_, actErr = scope.GenerateMigration(r.Context(), user.ID, id)
 	case "execute":
 		// The gate is re-evaluated inside EnqueueExecution rather than trusted
 		// from when this page was rendered: an approval can be withdrawn and the
 		// migration regenerated between someone seeing the button and pressing
 		// it.
-		actErr = scope.EnqueueExecution(r.Context(), id)
+		actErr = scope.EnqueueExecution(r.Context(), user.ID, id)
 	default:
 		actErr = errors.New("unknown action")
 	}

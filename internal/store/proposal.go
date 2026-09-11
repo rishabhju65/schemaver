@@ -51,6 +51,10 @@ func (s *Scope) Propose(ctx context.Context, authorID, databaseID, sourceID int6
 		s.writable, title, description, authorID, databaseID, sourceID).Scan(&id); err != nil {
 		return 0, fmt.Errorf("create change request: %w", err)
 	}
+	s.record(ctx, Info("request.opened", title).
+		By(authorID).
+		OnRequest(id).
+		OnDatabase(databaseID))
 	return id, nil
 }
 
@@ -67,7 +71,7 @@ var ErrNotObserved = errors.New("one of these databases has not been read yet")
 // what a reviewer approved stays inspectable — and because approvals record the
 // fingerprint pair they concerned, superseding one silently withdraws its
 // approvals without anything having to invalidate them.
-func (s *Scope) GenerateMigration(ctx context.Context, requestID int64) (int64, error) {
+func (s *Scope) GenerateMigration(ctx context.Context, actorID, requestID int64) (int64, error) {
 	if err := s.requireWrite(); err != nil {
 		return 0, err
 	}
@@ -176,6 +180,27 @@ func (s *Scope) GenerateMigration(ctx context.Context, requestID int64) (int64, 
 	if err := tx.Commit(ctx); err != nil {
 		return 0, fmt.Errorf("commit: %w", err)
 	}
+
+	// Recorded with the risk breakdown, because "generated 14 statements" and
+	// "generated 14 statements, 2 of them destructive" are different news.
+	generated := Info("migration.generated", fmt.Sprintf(
+		"%d change(s) in %d statement(s), %s → %s",
+		len(result.Changes), len(statements),
+		schema.Version(*fromFP).Short(), schema.Version(*toFP).Short()))
+	if result.Summary.Destructive > 0 {
+		generated = Warn("migration.generated", fmt.Sprintf(
+			"%d change(s) in %d statement(s), %d of them destructive, %s → %s",
+			len(result.Changes), len(statements), result.Summary.Destructive,
+			schema.Version(*fromFP).Short(), schema.Version(*toFP).Short()))
+	}
+	s.record(ctx, generated.
+		By(actorID).
+		OnRequest(requestID).
+		OnMigration(migrationID).
+		With(map[string]any{
+			"statements": len(statements), "summary": result.Summary,
+			"from": *fromFP, "to": *toFP,
+		}))
 	return migrationID, nil
 }
 

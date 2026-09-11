@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/rishabhju65/schemaver/internal/auth"
+	"github.com/rishabhju65/schemaver/internal/schema"
 )
 
 // Decision is one reviewer's verdict on a migration.
@@ -269,5 +270,32 @@ func (s *Scope) Decide(ctx context.Context, requestID, reviewerID int64, verdict
 			return fmt.Errorf("update request state: %w", err)
 		}
 	}
+
+	// A decision names the fingerprint pair it was made against, and so does
+	// this entry. An approval silently withdrawn by regeneration is otherwise
+	// invisible in hindsight: the timeline would show an approval and then an
+	// unexplained shut gate.
+	verdicts := map[string]string{
+		"approve":         "approved",
+		"request_changes": "requested changes on",
+		"reject":          "rejected",
+	}
+	said, ok := verdicts[verdict]
+	if !ok {
+		said = verdict
+	}
+	entry := Info("review."+verdict, fmt.Sprintf("%s as %s, for %s → %s",
+		said, role, schema.Version(from).Short(), schema.Version(to).Short()))
+	if verdict != "approve" {
+		entry = Warn("review."+verdict, entry.Message)
+	}
+	s.record(ctx, entry.
+		By(reviewerID).
+		OnRequest(requestID).
+		OnMigration(migrationID).
+		With(map[string]any{
+			"verdict": verdict, "role": string(role), "self_approved": self,
+			"from": from, "to": to,
+		}))
 	return nil
 }

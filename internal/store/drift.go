@@ -145,6 +145,28 @@ func (s *Store) RecordDrift(ctx context.Context, databaseID int64, r drift.Resul
 	if err := tx.Commit(ctx); err != nil {
 		return false, 0, fmt.Errorf("commit: %w", err)
 	}
+
+	// Recorded here rather than in the worker: this is where the change is
+	// known, and the worker would otherwise have to look up a project purely to
+	// describe something the store already has in hand. Drift is also the only
+	// activity nobody asked for, which makes it the most worth surfacing —
+	// everything else in the log is somebody's deliberate action.
+	if opened {
+		s.recordFor(ctx, databaseID, Warn("drift.detected", fmt.Sprintf(
+			"observed %s, expected %s (%s)",
+			r.Observed.Short(), r.Expected.Short(), r.Source)).
+			OnDatabase(databaseID).
+			With(map[string]any{
+				"observed": string(r.Observed), "expected": string(r.Expected),
+				"source": string(r.Source), "reason": r.Reason,
+			}))
+	}
+	if resolved > 0 {
+		s.recordFor(ctx, databaseID, Info("drift.resolved", fmt.Sprintf(
+			"back in line at %s; %d drift record(s) closed",
+			r.Observed.Short(), resolved)).
+			OnDatabase(databaseID))
+	}
 	return opened, resolved, nil
 }
 
