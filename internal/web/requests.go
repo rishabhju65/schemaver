@@ -148,6 +148,12 @@ func (s *Server) act(w http.ResponseWriter, r *http.Request) {
 			r.FormValue("resolution"))
 	case "regenerate":
 		_, actErr = scope.GenerateMigration(r.Context(), id)
+	case "execute":
+		// The gate is re-evaluated inside EnqueueExecution rather than trusted
+		// from when this page was rendered: an approval can be withdrawn and the
+		// migration regenerated between someone seeing the button and pressing
+		// it.
+		actErr = scope.EnqueueExecution(r.Context(), id)
 	default:
 		actErr = errors.New("unknown action")
 	}

@@ -36,8 +36,17 @@ already agree, or one of them has not been read yet.</p>
     {{else}}<span class="modified">○ awaiting an administrator</span>{{end}}
   </div>
   {{if .Executable}}
-  <p class="banner ok" style="margin:14px 0 0">Ready to execute. No executor is
-  built yet, so nothing will apply this — the gate is what exists today.</p>
+  <p class="banner ok" style="margin:14px 0 0">Ready to execute.</p>
+  {{if $.CanWrite}}
+  <form method="post" action="/requests/{{$r.ID}}/act" style="margin-top:12px">
+    <input type="hidden" name="csrf" value="{{$.CSRF}}">
+    <input type="hidden" name="do" value="execute">
+    <button type="submit" style="width:auto">Execute against {{$r.Database}}</button>
+    <span class="hint">Queued and applied under an exclusive lock. The gate is
+    checked again at that moment, and once more against the live schema before
+    any statement runs.</span>
+  </form>
+  {{end}}
   {{else}}
   <p class="banner warn" style="margin:14px 0 0">Not executable: {{.Reason}}</p>
   {{end}}
