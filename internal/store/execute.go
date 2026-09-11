@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -264,4 +265,54 @@ func (s *Store) FinishExecution(ctx context.Context, executionID int64, state, r
 		return fmt.Errorf("finish execution record: %w", err)
 	}
 	return nil
+}
+
+// Event is one entry in an execution's activity log.
+type Event struct {
+	// Ordinal names the statement this concerns, or is nil for the run itself.
+	Ordinal *int
+	Level   string
+	Kind    string
+	Message string
+	// Detail is the structured form, marshalled to JSON. Nil where there is
+	// nothing to add beyond the message.
+	Detail any
+}
+
+// Info, Warn and Error build the three severities, keeping the level a property
+// of the constructor rather than a string every caller has to remember.
+func Info(kind, message string) Event  { return Event{Level: "info", Kind: kind, Message: message} }
+func Warn(kind, message string) Event  { return Event{Level: "warn", Kind: kind, Message: message} }
+func Error(kind, message string) Event { return Event{Level: "error", Kind: kind, Message: message} }
+
+// At attaches the event to a statement.
+func (e Event) At(ordinal int) Event { e.Ordinal = &ordinal; return e }
+
+// With attaches the structured detail.
+func (e Event) With(detail any) Event { e.Detail = detail; return e }
+
+// AppendEvent adds one entry to an execution's activity log.
+//
+// Like RecordProgress, this reports rather than participates: a caller logs the
+// error and carries on, because failing to describe a migration must never
+// affect the migration.
+func (s *Store) AppendEvent(ctx context.Context, executionID int64, e Event) error {
+	var detail []byte
+	if e.Detail != nil {
+		var err error
+		if detail, err = json.Marshal(e.Detail); err != nil {
+			// Recorded without its structured half rather than dropped: the
+			// message is the part a person reads.
+			detail = nil
+		}
+	}
+	if e.Level == "" {
+		e.Level = "info"
+	}
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO schemaver.execution_event
+		       (execution_id, ordinal, level, kind, message, detail)
+		VALUES ($1, $2, $3, $4, $5, $6)`,
+		executionID, e.Ordinal, e.Level, e.Kind, e.Message, detail)
+	return err
 }
