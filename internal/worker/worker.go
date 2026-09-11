@@ -286,6 +286,13 @@ func (w *Worker) execute(ctx context.Context, migrationID int64) error {
 		"database", x.DatabaseName, "statements", len(x.Steps),
 		"from", x.From.Short(), "to", x.To.Short())
 
+	// Visible before the first statement runs, so the interface shows work in
+	// flight rather than a gap between queued and finished.
+	if serr := w.store.SetRequestState(ctx, x.RequestID, "EXECUTING",
+		fmt.Sprintf("applying %d statement(s) to %s", len(x.Steps), x.DatabaseName)); serr != nil {
+		w.log.Warn("marking the request as executing failed", "error", serr)
+	}
+
 	outcome, err := w.exec.Execute(ctx, x)
 	if err != nil {
 		// We could not get far enough to have an outcome. Record that rather

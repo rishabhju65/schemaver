@@ -95,6 +95,60 @@ now, while the choice is still open — not when it is needed.</p>
 </div>
 {{end}}
 
+{{with $r.Execution}}
+<h2 style="margin-top:26px">Execution</h2>
+<div class="card pad">
+  <div class="gates">
+    <span class="{{if eq .State "completed"}}added{{else if eq .State "running"}}modified{{else}}removed{{end}}">
+      {{.State}}</span>
+    <span class="fp">statement {{.Done}} of {{.Total}}</span>
+    <span class="fp">{{dur .Elapsed}} elapsed</span>
+    {{if .Final}}<span class="fp">now at {{short .Final}}</span>{{end}}
+  </div>
+
+  {{if .Blocked}}
+  {{/* The single most useful thing to hand a person while a migration
+       appears to hang: not that it is waiting, but on whom. */}}
+  <p class="banner err" style="margin:14px 0 0">
+    <b>Waiting on another session.</b>
+    Blocked by process {{range .BlockedBy}}{{.}} {{end}}{{if .WaitEvent}}· {{.WaitEvent}}{{end}}<br>
+    {{if .BlockerQuery}}<code class="fp">{{.BlockerQuery}}</code><br>
+    {{else}}<span class="fp">The blocking statement is not visible to this role;
+      the process id is still actionable.</span><br>{{end}}
+    This migration will give up when its lock timeout expires rather than
+    keep the table blocked.
+  </p>
+  {{else if .WaitEvent}}
+  <p class="sub" style="margin:12px 0 0">Waiting on {{.WaitEvent}}.</p>
+  {{end}}
+
+  {{if .Percent}}
+  <p class="sub" style="margin:12px 0 0">
+    {{if .Phase}}{{.Phase}} — {{end}}{{printf "%.1f" .Percent}}% complete
+    <span class="hint">Real progress, reported by the engine. Index builds
+    report it; table rewrites do not, and a number would be invented.</span></p>
+  {{else if .Phase}}
+  <p class="sub" style="margin:12px 0 0">{{.Phase}}</p>
+  {{end}}
+
+  <div style="margin-top:14px">
+    {{range .Steps}}
+    <div class="change">
+      <span class="cls {{if .Error}}destructive{{else if .Running}}lock_heavy{{else if .Finished}}additive{{else}}metadata_only{{end}}">
+        {{if .Error}}failed{{else if .Running}}running{{else if .Finished}}done{{else}}queued{{end}}</span>
+      <div><code>{{.SQL}}</code>
+        {{if .Started}}<br><span class="fp">{{dur .Elapsed}}</span>{{end}}
+        {{if .Error}}<br><span class="err">{{.Error}}</span>{{end}}</div>
+    </div>
+    {{end}}
+  </div>
+
+  {{if .Reason}}<p class="sub" style="margin-top:12px">{{.Reason}}</p>{{end}}
+  {{if .Running}}<p class="hint" style="margin-top:10px">This page refreshes
+  while the migration is running.</p>{{end}}
+</div>
+{{end}}
+
 <h2 style="margin-top:26px">Discussion</h2>
 {{range $r.Threads}}
 <div class="card pad thread">

@@ -2,6 +2,10 @@
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{{.Title}} · schemaver</title>
+{{/* Refreshed only while something is genuinely in flight. A blanket refresh
+     would fight the reader; none at all would leave them watching a stale page
+     during the one operation they most need to see. */}}
+{{if .Refresh}}<meta http-equiv="refresh" content="3">{{end}}
 <style>
 :root{--bg:#fbfbfa;--fg:#1a1a19;--dim:#6b6b68;--line:#e3e3e0;--card:#fff;
 --add:#1a7f4b;--mod:#9a6700;--del:#b42318;--accent:#2f5fd0}

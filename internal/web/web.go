@@ -45,6 +45,23 @@ type Server struct {
 // funcs are the helpers templates use to render values a person can read.
 var funcs = template.FuncMap{
 	"short": func(v schema.Version) string { return v.Short() },
+	// dur renders a duration the way a person reading a progress line would
+	// want it: coarse enough to scan, precise enough to see a statement that is
+	// taking longer than it should.
+	"dur": func(d time.Duration) string {
+		switch {
+		case d <= 0:
+			return "—"
+		case d < time.Second:
+			return fmt.Sprintf("%dms", d.Milliseconds())
+		case d < time.Minute:
+			return fmt.Sprintf("%.1fs", d.Seconds())
+		case d < time.Hour:
+			return fmt.Sprintf("%dm %ds", int(d.Minutes()), int(d.Seconds())%60)
+		default:
+			return fmt.Sprintf("%dh %dm", int(d.Hours()), int(d.Minutes())%60)
+		}
+	},
 	"mb": func(b int64) string {
 		if b <= 0 {
 			return "—"
