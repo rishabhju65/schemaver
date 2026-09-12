@@ -105,6 +105,22 @@ type RequestDetail struct {
 	// Timeline is the request's own story — opened, generated, reviewed,
 	// queued. What happened inside an execution belongs to that execution.
 	Timeline []Activity
+
+	// Revert is the generated way back, read at approval time so the cost of
+	// undoing is known before the change runs rather than during the incident
+	// (D-012). Nothing executes it.
+	Revert []RevertStep
+}
+
+// RevertLosesData reports that undoing would not restore everything, so the
+// page can say so once at the top rather than only per statement.
+func (d *RequestDetail) RevertLosesData() bool {
+	for _, st := range d.Revert {
+		if st.StructureOnly {
+			return true
+		}
+	}
+	return false
 }
 
 // Execution is the most recent attempt, or nil if there has never been one.
@@ -223,6 +239,11 @@ func (s *Scope) Request(ctx context.Context, id int64) (*RequestDetail, error) {
 	}
 	if d.Timeline, err = s.ActivityForRequest(ctx, id); err != nil {
 		return nil, err
+	}
+	if d.MigrationID != 0 {
+		if d.Revert, err = s.RevertSteps(ctx, d.MigrationID); err != nil {
+			return nil, err
+		}
 	}
 	for _, t := range d.Threads {
 		if t.Status == "open" {
