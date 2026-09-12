@@ -10,6 +10,14 @@
 <span class="hint">Databases are reached through the server they live on:
 register one and schemaver lists what it holds, then you choose which to
 manage.</span></p>
+{{else if .OrgWide}}
+{{/* The organisation-wide view is deliberately read-only, and silence here
+     reads as a missing feature rather than as a restriction — the same mistake
+     the empty-state-only link made, in a different branch. */}}
+<p class="banner">Looking across every project, which is read-only. Pick a
+single project in the header to add databases.</p>
+{{else}}
+<p class="sub">Only a project administrator can add databases.</p>
 {{end}}
 <div class="card scroll">
 <table>

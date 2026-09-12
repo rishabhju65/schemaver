@@ -19,6 +19,12 @@ services:
     # round trip.
     region: singapore
 
+    # Rebuild on every push to the connected branch. Without this the service
+    # keeps serving the image it was last built from — the free plan's sleep and
+    # wake restarts that image rather than rebuilding it, so a deployment can
+    # sit many commits behind indefinitely while looking perfectly healthy.
+    autoDeploy: true
+
     dockerfilePath: ./Dockerfile
     # No url argument: the metadata connection string comes from the environment,
     # so it can be rotated without editing this file.

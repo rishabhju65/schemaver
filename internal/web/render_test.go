@@ -181,16 +181,32 @@ func TestPopulatedFleetStillOffersOnboarding(t *testing.T) {
 			"onboarding is not a first-run task")
 	}
 
-	// And a reader who cannot write is not shown a control they cannot use.
-	var ro strings.Builder
-	if err := s.tmpl["fleet"].ExecuteTemplate(&ro, "layout", map[string]any{
-		"Rows": rows, "CanWrite": false,
-		"Title": "Fleet", "Nav": "fleet", "CSRF": "t",
-	}); err != nil {
-		t.Fatalf("render read-only: %v", err)
-	}
-	if strings.Contains(ro.String(), "Add databases") {
-		t.Error("a read-only viewer was offered the add control")
+	// A reader who cannot write is not offered the control — but is told why,
+	// on a populated fleet as well as an empty one. Silence where a control
+	// would be reads as a missing feature, which is the whole defect this test
+	// exists for, and it has a separate branch per reason.
+	for _, c := range []struct {
+		name    string
+		orgWide bool
+		want    string
+	}{
+		{"organisation-wide", true, "read-only"},
+		{"not an administrator", false, "Only a project administrator"},
+	} {
+		var ro strings.Builder
+		if err := s.tmpl["fleet"].ExecuteTemplate(&ro, "layout", map[string]any{
+			"Rows": rows, "CanWrite": false, "OrgWide": c.orgWide,
+			"Title": "Fleet", "Nav": "fleet", "CSRF": "t",
+		}); err != nil {
+			t.Fatalf("render %s: %v", c.name, err)
+		}
+		if strings.Contains(ro.String(), "Add databases") {
+			t.Errorf("%s: offered a control they cannot use", c.name)
+		}
+		if !strings.Contains(ro.String(), c.want) {
+			t.Errorf("%s: no explanation where the control would be; "+
+				"an absent control reads as a missing feature", c.name)
+		}
 	}
 }
 
