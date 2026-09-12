@@ -1,7 +1,9 @@
 {{define "content"}}
 <h1>Servers</h1>
-<p class="sub">PostgreSQL servers schemaver observes. Registering one discovers
-its databases; managing them is a separate, deliberate choice.</p>
+<p class="sub">PostgreSQL servers schemaver observes. Adding databases takes two
+steps: register the server they live on, then open it and tick the ones to
+manage. Registering discovers what a server holds and touches none of it —
+managing is the deliberate part.</p>
 {{if .CanWrite}}<p><a class="btn" href="/instances/new">Add a server</a></p>
 {{else if .OrgWide}}
 {{/* A control that is simply absent reads as a missing feature. The org-wide

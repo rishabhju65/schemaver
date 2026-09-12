@@ -1,6 +1,16 @@
 {{define "content"}}
 <h1>Fleet</h1>
 <p class="sub">Every registered database and the schema last observed on it.</p>
+{{/* A persistent way in. This link used to live only in the empty-state row, so
+     it disappeared the moment a deployment had a single database — which is
+     every deployment past its first five minutes, and exactly when somebody
+     wants to add the second one. Onboarding is not a first-run task. */}}
+{{if .CanWrite}}
+<p><a class="btn" href="/instances">Add databases</a>
+<span class="hint">Databases are reached through the server they live on:
+register one and schemaver lists what it holds, then you choose which to
+manage.</span></p>
+{{end}}
 <div class="card scroll">
 <table>
 <tr><th>Database</th><th>Instance</th><th>Environment</th><th>Version</th>

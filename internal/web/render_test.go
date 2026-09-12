@@ -153,6 +153,47 @@ func TestRequestPageRenders(t *testing.T) {
 // organisation-wide view. A control that is simply absent reads as a missing
 // feature rather than as a deliberate restriction, so each case has to say
 // which one it is.
+// TestPopulatedFleetStillOffersOnboarding guards the regression that made
+// onboarding unreachable in practice.
+//
+// The link to add databases lived only in the empty-state row, so it vanished
+// the moment a deployment had one database — which is every deployment past its
+// first few minutes, and exactly when somebody goes looking for how to add the
+// second. An empty-state test passes throughout, because the branch it checks
+// is the one branch that was never broken.
+func TestPopulatedFleetStillOffersOnboarding(t *testing.T) {
+	s := server(t, auth.Completed(), false)
+
+	rows := []store.DatabaseRow{{ID: 1, Name: "shop_prod", Instance: "db:5432", Managed: true}}
+	var out strings.Builder
+	if err := s.tmpl["fleet"].ExecuteTemplate(&out, "layout", map[string]any{
+		"Rows": rows, "CanWrite": true,
+		"Title": "Fleet", "Nav": "fleet", "CSRF": "t",
+	}); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	// Asserted on the control's own words, not on the href. The nav links to
+	// /instances on every page, so matching the path would pass whether or not
+	// the page offered anything at all — which is how the first version of this
+	// test passed against the very regression it was written for.
+	if !strings.Contains(out.String(), "Add databases") {
+		t.Error("a fleet with databases in it offers no way to add another; " +
+			"onboarding is not a first-run task")
+	}
+
+	// And a reader who cannot write is not shown a control they cannot use.
+	var ro strings.Builder
+	if err := s.tmpl["fleet"].ExecuteTemplate(&ro, "layout", map[string]any{
+		"Rows": rows, "CanWrite": false,
+		"Title": "Fleet", "Nav": "fleet", "CSRF": "t",
+	}); err != nil {
+		t.Fatalf("render read-only: %v", err)
+	}
+	if strings.Contains(ro.String(), "Add databases") {
+		t.Error("a read-only viewer was offered the add control")
+	}
+}
+
 func TestEmptyStatesOfferAWayForward(t *testing.T) {
 	s := server(t, auth.Completed(), false)
 
