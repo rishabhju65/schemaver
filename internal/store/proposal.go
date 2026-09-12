@@ -165,6 +165,24 @@ func (s *Scope) GenerateMigration(ctx context.Context, actorID, requestID int64)
 		return 0, fmt.Errorf("store migration: %w", err)
 	}
 
+	// The way back, derived and stored beside the way forward so a reviewer
+	// reads both before approving either (D-012). Generated here rather than on
+	// demand because it is evidence about this fingerprint pair: regenerating
+	// the migration must produce a new revert, and one computed later could be
+	// computed against schemas that have since moved.
+	revertSteps, _ := buildRevert(result, from, to)
+	for _, st := range revertSteps {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO schemaver.migration_revert_step
+			    (migration_id, ordinal, sql, change_id, transactional, note,
+			     structure_only)
+			VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), $7)`,
+			migrationID, st.Ordinal, st.SQL, st.ChangeID, st.Transactional,
+			st.Note, st.StructureOnly); err != nil {
+			return 0, fmt.Errorf("store revert step %d: %w", st.Ordinal, err)
+		}
+	}
+
 	for i, st := range statements {
 		// expected_after is left null: the fingerprint chain needs each step
 		// simulated in a shadow database, which the executor will do when it
