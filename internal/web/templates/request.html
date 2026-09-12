@@ -28,6 +28,10 @@ already agree, or one of them has not been read yet.</p>
   <b>Gate</b>
   <div class="gates">
     <span class="added">✓ generated · {{len $r.Steps}} statement(s)</span>
+    {{if eq .ProofState "passed"}}<span class="added">✓ proven on a throwaway copy</span>
+    {{else if eq .ProofState "pending"}}<span class="modified">○ being proven…</span>
+    {{else if eq .ProofState "failed"}}<span class="removed">✗ failed its proof</span>
+    {{else}}<span class="removed">✗ not proven</span>{{end}}
     {{if .Blocking}}<span class="removed">✗ a reviewer objected</span>
     {{else}}<span class="fp">○ no objection</span>{{end}}
     {{if .UnansweredRenames}}<span class="removed">✗ {{.UnansweredRenames}} rename question(s) unanswered</span>
@@ -35,6 +39,24 @@ already agree, or one of them has not been read yet.</p>
     {{if .AdminApprovals}}<span class="added">✓ {{.AdminApprovals}} administrator approval(s)</span>
     {{else}}<span class="modified">○ awaiting an administrator</span>{{end}}
   </div>
+  {{if eq .ProofState "unproven"}}
+  {{/* Not a failure of the migration — a failure to check it. Said plainly,
+       because everything downstream, including the executor's own account of a
+       run that goes wrong, reads differently when nothing was proven. */}}
+  <p class="banner err" style="margin:14px 0 0">
+    <b>This migration has not been proven.</b>
+    {{if .ProofReason}}{{.ProofReason}}{{else}}No shadow server was available.{{end}}<br>
+    Nothing has applied it to a throwaway copy to confirm it produces the schema
+    it declares, so the statements below are unverified and a failure part way
+    through could not be placed precisely.
+  </p>
+  {{end}}
+  {{if eq .ProofState "failed"}}
+  <p class="banner err" style="margin:14px 0 0">
+    <b>This migration did not produce the schema it declares.</b><br>
+    {{.ProofReason}}
+  </p>
+  {{end}}
   {{if .Executable}}
   <p class="banner ok" style="margin:14px 0 0">Ready to execute.</p>
   {{if $.CanWrite}}

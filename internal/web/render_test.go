@@ -86,7 +86,12 @@ func TestRequestPageRenders(t *testing.T) {
 			ID: "add_column:public.orders.channel", Kind: "add_column",
 			Class: diff.Additive, Summary: "add orders.channel",
 		}},
-		Steps:      []store.Step{{Ordinal: 1, SQL: "ALTER TABLE public.orders ADD COLUMN channel text;", ChangeID: "add_column:public.orders.channel", Transactional: true}},
+		Steps: []store.Step{{Ordinal: 1, SQL: "ALTER TABLE public.orders ADD COLUMN channel text;", ChangeID: "add_column:public.orders.channel", Transactional: true}},
+		Approval: &store.ApprovalState{
+			MigrationID: 12, ProofState: "unproven",
+			ProofReason:    "no shadow server is configured",
+			AdminApprovals: 1, Executable: true,
+		},
 		Executions: []*store.ExecutionView{finished, blocked},
 		Timeline: []store.Activity{
 			{At: began, Actor: "admin@example.com", Level: "info",
@@ -129,7 +134,7 @@ func TestRequestPageRenders(t *testing.T) {
 	for _, want := range []string{
 		"Activity", "Earlier attempts",
 		"applying 2 statement(s)", "waiting on a lock", "lock timeout",
-		"Timeline", "1 of them destructive", "admin@example.com",
+		"Timeline", "1 of them destructive", "has not been proven", "admin@example.com",
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("the rendered page does not mention %q", want)
