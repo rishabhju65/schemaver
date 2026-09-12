@@ -2,7 +2,10 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
 
 	"github.com/rishabhju65/schemaver/internal/diff"
 	"github.com/rishabhju65/schemaver/internal/render"
@@ -104,4 +107,27 @@ func (s *Scope) RevertSteps(ctx context.Context, migrationID int64) ([]RevertSte
 		out = append(out, st)
 	}
 	return out, rows.Err()
+}
+
+// planDigest identifies the statements a decision was made about.
+//
+// Covers the migration and its revert together, because they are reviewed and
+// approved as one: an administrator who adjusts the way back has changed what
+// the approval was for just as surely as one who adjusts the way forward.
+//
+// The ordinal is digested alongside the text so that reordering two statements
+// changes the digest even when every statement is individually unchanged.
+// Ordering is most of what a migration is — a drop before the index that
+// depends on it is a different plan from the reverse — and a digest that
+// ignored it would call two different plans the same.
+func planDigest(forward []Step, revert []RevertStep) string {
+	h := sha256.New()
+	for _, st := range forward {
+		fmt.Fprintf(h, "%d:%s\n", st.Ordinal, st.SQL)
+	}
+	io.WriteString(h, "--\n")
+	for _, st := range revert {
+		fmt.Fprintf(h, "%d:%s\n", st.Ordinal, st.SQL)
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }

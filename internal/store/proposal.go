@@ -141,6 +141,22 @@ func (s *Scope) GenerateMigration(ctx context.Context, actorID, requestID int64)
 		return 0, fmt.Errorf("serialize rename candidates: %w", err)
 	}
 
+	// The way back, derived and stored beside the way forward so a reviewer
+	// reads both before approving either (D-012). Generated here rather than on
+	// demand because it is evidence about this fingerprint pair: regenerating
+	// the migration must produce a new revert, and one computed later could be
+	// computed against schemas that have since moved.
+	revertSteps, _ := buildRevert(result, from, to)
+
+	forwardSteps := make([]Step, 0, len(statements))
+	for i, st := range statements {
+		forwardSteps = append(forwardSteps, Step{
+			Ordinal: i + 1, SQL: st.SQL, ChangeID: st.ChangeID,
+			Transactional: st.Transactional, Note: st.Note,
+		})
+	}
+	digest := planDigest(forwardSteps, revertSteps)
+
 	tx, err := s.store.pool.Begin(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("begin: %w", err)
@@ -157,20 +173,17 @@ func (s *Scope) GenerateMigration(ctx context.Context, actorID, requestID int64)
 	if err := tx.QueryRow(ctx, `
 		INSERT INTO schemaver.migration
 		    (change_request_id, from_fingerprint, to_fingerprint, changes,
-		     rename_candidates, irreversible_reason, weight)
-		VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), $7)
+		     rename_candidates, irreversible_reason, weight, plan_digest)
+		VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), $7, $8)
 		RETURNING id`,
 		requestID, *fromFP, *toFP, changesJSON, renamesJSON,
-		irreversibleReason(result), diff.Weight(result.Changes)).Scan(&migrationID); err != nil {
+		irreversibleReason(result), diff.Weight(result.Changes),
+		digest).Scan(&migrationID); err != nil {
 		return 0, fmt.Errorf("store migration: %w", err)
 	}
 
-	// The way back, derived and stored beside the way forward so a reviewer
-	// reads both before approving either (D-012). Generated here rather than on
-	// demand because it is evidence about this fingerprint pair: regenerating
-	// the migration must produce a new revert, and one computed later could be
-	// computed against schemas that have since moved.
-	revertSteps, _ := buildRevert(result, from, to)
+	// Stored beside the way forward so a reviewer reads both before approving
+	// either (D-012).
 	for _, st := range revertSteps {
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO schemaver.migration_revert_step

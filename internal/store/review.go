@@ -20,6 +20,10 @@ type Decision struct {
 	Comment       string
 	SelfApproved  bool
 	DecidedAt     time.Time
+	// Current reports that the statements this decision was made about are
+	// still the statements the migration holds. False once somebody has edited
+	// them.
+	Current bool
 }
 
 // Approves reports whether this decision is an approval by a project
@@ -64,6 +68,15 @@ type ApprovalState struct {
 	ProofState  string
 	ProofReason string
 
+	// PlanDigest identifies the statements this state describes. A decision
+	// recorded against a different one is not evidence about these.
+	PlanDigest string
+	// StaleDecisions counts decisions made about statements that have since
+	// been edited. Shown rather than hidden: somebody did read this, and the
+	// page should say their reading no longer applies rather than pretend it
+	// never happened.
+	StaleDecisions int
+
 	Executable bool
 	// Reason explains a refusal, in the terms the person reading it can act on.
 	Reason string
@@ -88,14 +101,15 @@ func (s *Scope) ApprovalState(ctx context.Context, requestID int64) (*ApprovalSt
 		       jsonb_array_length(
 		           COALESCE(NULLIF(m.rename_candidates, 'null'::jsonb), '[]'::jsonb)),
 		       r.author_id, r.project_id,
-		       m.proof_state, COALESCE(m.proof_reason, '')
+		       m.proof_state, COALESCE(m.proof_reason, ''), m.plan_digest
 		  FROM schemaver.change_request r
 		  JOIN schemaver.migration m ON m.change_request_id = r.id
 		 WHERE r.id = $1 AND r.project_id = ANY($2) AND m.superseded_at IS NULL
 		 ORDER BY m.generated_at DESC
 		 LIMIT 1`, requestID, s.projects).
 		Scan(&st.MigrationID, &st.FromFingerprint, &st.ToFingerprint,
-			&renames, &authorID, &projectID, &st.ProofState, &st.ProofReason)
+			&renames, &authorID, &projectID, &st.ProofState, &st.ProofReason,
+			&st.PlanDigest)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNoMigration
 	}
@@ -104,15 +118,18 @@ func (s *Scope) ApprovalState(ctx context.Context, requestID int64) (*ApprovalSt
 	}
 	st.UnansweredRenames = renames
 
-	// Only decisions about *this* migration count. A regenerated migration
-	// leaves its predecessor's approvals behind without anything having to
-	// withdraw them.
+	// Only decisions about *this* migration, and about its statements as they
+	// stand now. A regenerated migration leaves its predecessor's approvals
+	// behind without anything having to withdraw them; an edited one leaves
+	// them behind on a digest that no longer matches, which is the same
+	// mechanism applied to the case where the endpoints did not move.
 	rows, err := s.store.pool.Query(ctx, `
 		SELECT COALESCE(reviewer_id, 0), reviewer_label, reviewer_role,
-		       decision, COALESCE(comment, ''), self_approved, decided_at
+		       decision, COALESCE(comment, ''), self_approved, decided_at,
+		       COALESCE(plan_digest, '') = $2 AS current
 		  FROM schemaver.review_decision
 		 WHERE migration_id = $1
-		 ORDER BY decided_at`, st.MigrationID)
+		 ORDER BY decided_at`, st.MigrationID, st.PlanDigest)
 	if err != nil {
 		return nil, fmt.Errorf("load decisions: %w", err)
 	}
@@ -122,11 +139,19 @@ func (s *Scope) ApprovalState(ctx context.Context, requestID int64) (*ApprovalSt
 		var d Decision
 		var role string
 		if err := rows.Scan(&d.ReviewerID, &d.ReviewerLabel, &role, &d.Verdict,
-			&d.Comment, &d.SelfApproved, &d.DecidedAt); err != nil {
+			&d.Comment, &d.SelfApproved, &d.DecidedAt, &d.Current); err != nil {
 			return nil, fmt.Errorf("scan decision: %w", err)
 		}
 		d.ReviewerRole = auth.Role(role)
 		st.Decisions = append(st.Decisions, d)
+		// Kept in the list but not counted. A reviewer who approved statements
+		// that have since been edited should still be visible on the page —
+		// their reading happened and saying otherwise would erase it — but
+		// their approval is of something that no longer exists.
+		if !d.Current {
+			st.StaleDecisions++
+			continue
+		}
 		if d.Approves() {
 			st.AdminApprovals++
 		}
@@ -206,15 +231,16 @@ func (s *Scope) Decide(ctx context.Context, requestID, reviewerID int64, verdict
 	}
 
 	var migrationID, projectID int64
-	var from, to string
+	var from, to, digest string
 	var authorID *int64
 	err := s.store.pool.QueryRow(ctx, `
-		SELECT m.id, m.from_fingerprint, m.to_fingerprint, r.project_id, r.author_id
+		SELECT m.id, m.from_fingerprint, m.to_fingerprint, m.plan_digest,
+		       r.project_id, r.author_id
 		  FROM schemaver.change_request r
 		  JOIN schemaver.migration m ON m.change_request_id = r.id
 		 WHERE r.id = $1 AND r.project_id = ANY($2) AND m.superseded_at IS NULL
 		 ORDER BY m.generated_at DESC LIMIT 1`, requestID, s.projects).
-		Scan(&migrationID, &from, &to, &projectID, &authorID)
+		Scan(&migrationID, &from, &to, &digest, &projectID, &authorID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrNoMigration
 	}
@@ -256,16 +282,17 @@ func (s *Scope) Decide(ctx context.Context, requestID, reviewerID int64, verdict
 		INSERT INTO schemaver.review_decision
 		    (change_request_id, migration_id, reviewer_id, reviewer_label,
 		     reviewer_role, decision, comment, self_approved,
-		     from_fingerprint, to_fingerprint)
-		VALUES ($1, $2, $3, $4, $5, $6, NULLIF($7, ''), $8, $9, $10)
+		     from_fingerprint, to_fingerprint, plan_digest)
+		VALUES ($1, $2, $3, $4, $5, $6, NULLIF($7, ''), $8, $9, $10, $11)
 		ON CONFLICT (migration_id, reviewer_id) DO UPDATE
 		   SET decision = EXCLUDED.decision,
 		       comment = EXCLUDED.comment,
 		       reviewer_role = EXCLUDED.reviewer_role,
 		       self_approved = EXCLUDED.self_approved,
+		       plan_digest = EXCLUDED.plan_digest,
 		       decided_at = now()`,
 		requestID, migrationID, reviewerID, label, string(role), verdict,
-		comment, self, from, to); err != nil {
+		comment, self, from, to, digest); err != nil {
 		return fmt.Errorf("record decision: %w", err)
 	}
 
