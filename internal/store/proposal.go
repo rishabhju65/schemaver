@@ -179,11 +179,33 @@ func (s *Scope) GenerateMigration(ctx context.Context, actorID, requestID int64)
 		}
 	}
 
+	// STAGE_SANITY rather than IN_REVIEW: the migration has been written but
+	// not yet shown to produce the schema it claims, and there is no point
+	// asking people to read something that may not apply at all. The proof
+	// moves it on, either to review or back to its author.
 	if _, err := tx.Exec(ctx, `
 		UPDATE schemaver.change_request
-		   SET state = 'IN_REVIEW', state_reason = NULL, updated_at = now()
+		   SET state = 'STAGE_SANITY',
+		       state_reason = 'proving this migration against a throwaway copy',
+		       updated_at = now()
 		 WHERE id = $1`, requestID); err != nil {
 		return 0, fmt.Errorf("advance request: %w", err)
+	}
+
+	// Queued inside the same transaction that writes the migration, so a
+	// migration cannot exist without the proof that examines it being asked
+	// for. Keyed on the migration id, which is new for every regeneration.
+	//
+	// No instance: a proof touches the shadow server and never the database it
+	// describes, so charging it against that instance's connection budget would
+	// hold up real work to pay for connections it does not open.
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO schemaver.job
+		    (kind, target_kind, target_id, weight, idempotency_key)
+		VALUES ('prove', 'migration', $1, 1, $2)
+		ON CONFLICT (idempotency_key) DO NOTHING`,
+		migrationID, fmt.Sprintf("prove:%d", migrationID)); err != nil {
+		return 0, fmt.Errorf("enqueue proof: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return 0, fmt.Errorf("commit: %w", err)

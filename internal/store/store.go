@@ -386,10 +386,11 @@ const (
 	KindObserve  = "observe"
 	KindDiscover = "discover"
 	KindExecute  = "execute"
+	KindProve    = "prove"
 )
 
 // ObservationKinds is the cheap, short work.
-var ObservationKinds = []string{KindObserve, KindDiscover}
+var ObservationKinds = []string{KindObserve, KindDiscover, KindProve}
 
 // ExecutionKinds is the long work. Claimed by a separate pool: a migration can
 // hold a worker for an hour, and eight of them sharing one pool with observation

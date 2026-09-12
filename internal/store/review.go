@@ -58,6 +58,12 @@ type ApprovalState struct {
 	// with one outstanding risks destroying a column.
 	UnansweredRenames int
 
+	// ProofState is whether this migration has been applied to a throwaway
+	// database and checked against its declared target: pending, passed, failed
+	// or unproven. ProofReason says why, when it did not pass.
+	ProofState  string
+	ProofReason string
+
 	Executable bool
 	// Reason explains a refusal, in the terms the person reading it can act on.
 	Reason string
@@ -81,14 +87,15 @@ func (s *Scope) ApprovalState(ctx context.Context, requestID int64) (*ApprovalSt
 		       -- generator was fixed to store an empty array.
 		       jsonb_array_length(
 		           COALESCE(NULLIF(m.rename_candidates, 'null'::jsonb), '[]'::jsonb)),
-		       r.author_id, r.project_id
+		       r.author_id, r.project_id,
+		       m.proof_state, COALESCE(m.proof_reason, '')
 		  FROM schemaver.change_request r
 		  JOIN schemaver.migration m ON m.change_request_id = r.id
 		 WHERE r.id = $1 AND r.project_id = ANY($2) AND m.superseded_at IS NULL
 		 ORDER BY m.generated_at DESC
 		 LIMIT 1`, requestID, s.projects).
 		Scan(&st.MigrationID, &st.FromFingerprint, &st.ToFingerprint,
-			&renames, &authorID, &projectID)
+			&renames, &authorID, &projectID, &st.ProofState, &st.ProofReason)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNoMigration
 	}
@@ -145,6 +152,12 @@ func (s *Scope) ApprovalState(ctx context.Context, requestID int64) (*ApprovalSt
 // evaluate applies the gate, in the order a reader would ask the questions.
 func (st *ApprovalState) evaluate() (bool, string) {
 	switch {
+	case st.ProofState == "pending":
+		return false, "this migration has not finished being proven against a " +
+			"throwaway copy of the database yet"
+	case st.ProofState == "failed":
+		return false, "this migration did not produce the schema it declares when " +
+			"applied to a throwaway copy: " + st.ProofReason
 	case st.Blocking > 0:
 		return false, "a reviewer has requested changes or rejected this migration"
 	case st.UnansweredRenames > 0:

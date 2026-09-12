@@ -101,6 +101,11 @@ type Execution struct {
 	To   schema.Version
 
 	Steps []Step
+	// Expected is the fingerprint each statement should leave behind, from the
+	// shadow proof, or empty if this migration was never proven. Lets a
+	// half-applied migration be placed exactly rather than described as being
+	// somewhere between its start and its target.
+	Expected []schema.Version
 }
 
 // LoadExecution assembles the context for a migration, decrypting the target's
@@ -145,20 +150,31 @@ func (s *Store) LoadExecution(ctx context.Context, migrationID int64) (*Executio
 	x.DSN = e.dsn()
 
 	rows, err := s.pool.Query(ctx, `
-		SELECT ordinal, sql, change_id, transactional, COALESCE(note, '')
+		SELECT ordinal, sql, change_id, transactional, COALESCE(note, ''),
+		       COALESCE(expected_after, '')
 		  FROM schemaver.migration_step
 		 WHERE migration_id = $1 ORDER BY ordinal`, migrationID)
 	if err != nil {
 		return nil, fmt.Errorf("load steps: %w", err)
 	}
 	defer rows.Close()
+	var proven bool
 	for rows.Next() {
 		var st Step
+		var expected string
 		if err := rows.Scan(&st.Ordinal, &st.SQL, &st.ChangeID,
-			&st.Transactional, &st.Note); err != nil {
+			&st.Transactional, &st.Note, &expected); err != nil {
 			return nil, fmt.Errorf("scan step: %w", err)
 		}
 		x.Steps = append(x.Steps, st)
+		x.Expected = append(x.Expected, schema.Version(expected))
+		proven = proven || expected != ""
+	}
+	if !proven {
+		// All or nothing. A chain with holes in it would let the executor place
+		// a failure at the wrong statement, which is worse than admitting it
+		// cannot place it at all.
+		x.Expected = nil
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

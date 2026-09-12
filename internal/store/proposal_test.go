@@ -88,8 +88,28 @@ func TestProposeReviewApprove(t *testing.T) {
 	}
 	rows.Close()
 
-	// Before approval the gate must be shut, and it must say why.
+	// A freshly generated migration is shut on its proof before anybody has
+	// even looked at it: approving something that has not been shown to produce
+	// the schema it claims would be approving a guess.
 	state, err := scope.ApprovalState(ctx, requestID)
+	if err != nil {
+		t.Fatalf("ApprovalState: %v", err)
+	}
+	if state.Executable {
+		t.Error("executable before the proof had run")
+	}
+	if state.ProofState != "pending" {
+		t.Errorf("a new migration starts at proof_state %q, want pending", state.ProofState)
+	}
+	t.Logf("gate closed on the proof: %s", state.Reason)
+
+	// Stand in for the worker, which is not running here.
+	if err := st.RecordProof(ctx, migrationID, "passed", "", nil); err != nil {
+		t.Fatalf("RecordProof: %v", err)
+	}
+
+	// Before approval the gate must still be shut, and it must say why.
+	state, err = scope.ApprovalState(ctx, requestID)
 	if err != nil {
 		t.Fatalf("ApprovalState: %v", err)
 	}
@@ -127,8 +147,9 @@ func TestProposeReviewApprove(t *testing.T) {
 	t.Logf("gate open; %d administrator approval(s), self-approved=%v",
 		state.AdminApprovals, state.Decisions[0].SelfApproved)
 
-	// Regenerating supersedes the migration, and the approval stops matching
-	// without anything having to withdraw it.
+	// Regenerating supersedes the migration, and both the approval and the proof
+	// stop applying without anything having to withdraw them. Both are evidence
+	// about one fingerprint pair, and the new migration is a different row.
 	if _, err := scope.GenerateMigration(ctx, userID, requestID); err != nil {
 		t.Fatalf("regenerate: %v", err)
 	}
@@ -138,6 +159,10 @@ func TestProposeReviewApprove(t *testing.T) {
 	}
 	if state.Executable {
 		t.Error("the approval survived regeneration; evidence must expire with the migration")
+	}
+	if state.ProofState != "pending" {
+		t.Errorf("the regenerated migration starts at proof_state %q, want pending — "+
+			"a proof of the previous statements says nothing about these", state.ProofState)
 	}
 	t.Logf("after regeneration the gate is shut again: %s", state.Reason)
 }
