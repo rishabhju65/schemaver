@@ -3,9 +3,11 @@ package web
 import (
 	"errors"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
+	"github.com/rishabhju65/schemaver/internal/auth"
 	"github.com/rishabhju65/schemaver/internal/store"
 )
 
@@ -100,6 +102,14 @@ func (s *Server) request(w http.ResponseWriter, r *http.Request) {
 		"Refresh": detail.Execution() != nil && detail.Execution().Running(),
 		// The author cannot approve their own request unless they are the only
 		// administrator, so the button is hidden rather than offered and refused.
+		// Only an administrator edits, and only while the statements are still
+		// under review — after that they are on their way to a database, or
+		// they are the record of what ran.
+		"CanEdit": user != nil && user.Role == auth.Admin &&
+			detail.MigrationID != 0 &&
+			detail.State != "READY_TO_EXECUTE" && detail.State != "EXECUTING" &&
+			detail.State != "COMPLETED" && detail.State != "CLOSED" &&
+			detail.State != "NEEDS_ATTENTION",
 		"CanDecide": user != nil && user.Role.CanWrite() &&
 			(detail.Author != user.Email ||
 				(detail.Approval != nil && detail.Approval.SoleAdmin)),
@@ -200,4 +210,50 @@ func (s *Server) activity(w http.ResponseWriter, r *http.Request) {
 		"Entries": entries,
 		"Level":   level,
 	})
+}
+
+// editStatement lets an administrator correct one statement of a migration or
+// its revert.
+//
+// The generator gets things wrong — a cast with no USING clause, a change it
+// can only render as a comment — and D-001 has always said a human must be able
+// to correct the generated plan. Editing withdraws every approval and sends the
+// migration back to be proven, so the correction is cheap to make and impossible
+// to make quietly.
+func (s *Server) editStatement(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "not a request id", http.StatusBadRequest)
+		return
+	}
+	if !checkCSRF(r) {
+		http.Error(w, "invalid form token; reload the page and try again",
+			http.StatusForbidden)
+		return
+	}
+	scope, serr := s.scoped(r)
+	if serr != nil {
+		http.Error(w, serr.Error(), http.StatusInternalServerError)
+		return
+	}
+	migrationID, err := strconv.ParseInt(r.FormValue("migration"), 10, 64)
+	if err != nil {
+		http.Error(w, "not a migration id", http.StatusBadRequest)
+		return
+	}
+	ordinal, err := strconv.Atoi(r.FormValue("ordinal"))
+	if err != nil {
+		http.Error(w, "not a statement number", http.StatusBadRequest)
+		return
+	}
+
+	back := "/requests/" + strconv.FormatInt(id, 10)
+	err = scope.EditStatement(r.Context(), userFrom(r.Context()).ID, migrationID,
+		r.FormValue("which") == "revert", ordinal, r.FormValue("sql"))
+	if err != nil {
+		http.Redirect(w, r, back+"?error="+url.QueryEscape(err.Error()),
+			http.StatusSeeOther)
+		return
+	}
+	http.Redirect(w, r, back, http.StatusSeeOther)
 }

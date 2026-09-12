@@ -112,7 +112,7 @@ func TestRequestPageRenders(t *testing.T) {
 		}
 		data := map[string]any{
 			"R": detail, "Refresh": name == "running",
-			"CanDecide": true, "IsAuthor": false,
+			"CanDecide": true, "IsAuthor": false, "CanEdit": true,
 			"Title": detail.Title, "Nav": "requests",
 			"CSRF": "token", "CanWrite": true,
 		}
@@ -127,6 +127,7 @@ func TestRequestPageRenders(t *testing.T) {
 	detail.Executions = []*store.ExecutionView{finished, blocked}
 	if err := s.tmpl["request"].ExecuteTemplate(&out, "layout", map[string]any{
 		"R": detail, "Title": detail.Title, "Nav": "requests", "CSRF": "t",
+		"CanEdit": true,
 	}); err != nil {
 		t.Fatalf("render: %v", err)
 	}
@@ -134,7 +135,8 @@ func TestRequestPageRenders(t *testing.T) {
 	for _, want := range []string{
 		"Activity", "Earlier attempts",
 		"applying 2 statement(s)", "waiting on a lock", "lock timeout",
-		"Timeline", "1 of them destructive", "has not been proven", "admin@example.com",
+		"Timeline", "1 of them destructive", "has not been proven",
+		"withdraws every approval", "name=\"sql\"", "admin@example.com",
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("the rendered page does not mention %q", want)

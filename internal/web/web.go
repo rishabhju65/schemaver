@@ -143,6 +143,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /requests/new", s.requireWriter(s.requestNew))
 	mux.HandleFunc("POST /requests/new", s.requireWriter(s.requestNew))
 	mux.HandleFunc("POST /requests/{id}/act", s.requireWriter(s.act))
+	mux.HandleFunc("POST /requests/{id}/edit", s.requireWriter(s.editStatement))
 	mux.HandleFunc("POST /project", s.requireUser(s.switchProject))
 	mux.HandleFunc("GET /instances/{id}", s.requireUser(s.instanceDetail))
 

@@ -108,11 +108,27 @@ now, while the choice is still open — not when it is needed.</p>
       <div class="change">
         <span class="cls {{if .Transactional}}metadata_only{{else}}lock_heavy{{end}}">
           {{if .Transactional}}{{.Ordinal}}{{else}}!{{end}}</span>
-        <div><code>{{.SQL}}</code>
+        <div>
+          {{if $.CanEdit}}
+          {{/* Editable in place. The generator gets casts and unrenderable
+               changes wrong, and correcting one should not mean regenerating
+               the whole migration and losing the conversation attached to it. */}}
+          <form method="post" action="/requests/{{$r.ID}}/edit" class="edit">
+            <input type="hidden" name="csrf" value="{{$.CSRF}}">
+            <input type="hidden" name="migration" value="{{$r.MigrationID}}">
+            <input type="hidden" name="ordinal" value="{{.Ordinal}}">
+            <input type="hidden" name="which" value="forward">
+            <textarea name="sql" rows="2" spellcheck="false">{{.SQL}}</textarea>
+            <button type="submit">Save</button>
+          </form>
+          {{else}}<code>{{.SQL}}</code>{{end}}
           {{if .Note}}<br><span class="fp">{{.Note}}</span>{{end}}</div>
       </div>
       {{end}}
     </div>
+    {{if $.CanEdit}}<p class="hint">Editing a statement withdraws every approval
+    and sends the migration back to be proven. Corrections are cheap; making one
+    quietly is not possible.</p>{{end}}
   </div>
 </div>
 
@@ -139,7 +155,17 @@ apply this for you.</p>
   <div class="change">
     <span class="cls {{if .StructureOnly}}destructive{{else if .Transactional}}metadata_only{{else}}lock_heavy{{end}}">
       {{if .StructureOnly}}shape{{else if .Transactional}}{{.Ordinal}}{{else}}!{{end}}</span>
-    <div><code>{{.SQL}}</code>
+    <div>
+      {{if $.CanEdit}}
+      <form method="post" action="/requests/{{$r.ID}}/edit" class="edit">
+        <input type="hidden" name="csrf" value="{{$.CSRF}}">
+        <input type="hidden" name="migration" value="{{$r.MigrationID}}">
+        <input type="hidden" name="ordinal" value="{{.Ordinal}}">
+        <input type="hidden" name="which" value="revert">
+        <textarea name="sql" rows="2" spellcheck="false">{{.SQL}}</textarea>
+        <button type="submit">Save</button>
+      </form>
+      {{else}}<code>{{.SQL}}</code>{{end}}
       {{if .Note}}<br><span class="{{if .StructureOnly}}err{{else}}fp{{end}}">{{.Note}}</span>{{end}}</div>
   </div>
   {{end}}
