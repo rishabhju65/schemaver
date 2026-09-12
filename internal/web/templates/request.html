@@ -32,6 +32,10 @@ already agree, or one of them has not been read yet.</p>
     {{else if eq .ProofState "pending"}}<span class="modified">○ being proven…</span>
     {{else if eq .ProofState "failed"}}<span class="removed">✗ failed its proof</span>
     {{else}}<span class="removed">✗ not proven</span>{{end}}
+    {{if eq .RevertProofState "passed"}}<span class="added">✓ the way back leads back</span>
+    {{else if eq .RevertProofState "pending"}}<span class="modified">○ checking the way back…</span>
+    {{else if eq .RevertProofState "failed"}}<span class="removed">✗ the way back does not lead back</span>
+    {{else}}<span class="fp">○ way back unchecked</span>{{end}}
     {{if .Blocking}}<span class="removed">✗ a reviewer objected</span>
     {{else}}<span class="fp">○ no objection</span>{{end}}
     {{if .UnansweredRenames}}<span class="removed">✗ {{.UnansweredRenames}} rename question(s) unanswered</span>
@@ -55,6 +59,18 @@ already agree, or one of them has not been read yet.</p>
   <p class="banner err" style="margin:14px 0 0">
     <b>This migration did not produce the schema it declares.</b><br>
     {{.ProofReason}}
+  </p>
+  {{end}}
+  {{if eq .RevertProofState "failed"}}
+  {{/* The forward half is fine — it applied and verified before the revert was
+       tried. Only the way back is wrong, and an administrator can edit it
+       below until it leads back. */}}
+  <p class="banner err" style="margin:14px 0 0">
+    <b>The way back does not lead back.</b><br>
+    {{.RevertProofReason}}<br>
+    The migration itself is proven; it is the revert that does not restore the
+    starting schema. Edit the revert statements below and it will be checked
+    again.
   </p>
   {{end}}
   {{if .Executable}}

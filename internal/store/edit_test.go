@@ -65,6 +65,9 @@ func TestEditingWithdrawsApproval(t *testing.T) {
 	if err := st.RecordProof(ctx, migrationID, "passed", "", nil); err != nil {
 		t.Fatalf("RecordProof: %v", err)
 	}
+	if err := st.RecordRevertProof(ctx, migrationID, "passed", ""); err != nil {
+		t.Fatalf("RecordRevertProof: %v", err)
+	}
 	if err := scope.Decide(ctx, requestID, userID, "approve", "looks right"); err != nil {
 		t.Fatalf("Decide: %v", err)
 	}

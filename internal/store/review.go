@@ -67,6 +67,10 @@ type ApprovalState struct {
 	// or unproven. ProofReason says why, when it did not pass.
 	ProofState  string
 	ProofReason string
+	// RevertProofState is whether the way back was shown to lead back, by
+	// applying it to the shadow once the forward statements had been applied.
+	RevertProofState  string
+	RevertProofReason string
 
 	// PlanDigest identifies the statements this state describes. A decision
 	// recorded against a different one is not evidence about these.
@@ -101,7 +105,8 @@ func (s *Scope) ApprovalState(ctx context.Context, requestID int64) (*ApprovalSt
 		       jsonb_array_length(
 		           COALESCE(NULLIF(m.rename_candidates, 'null'::jsonb), '[]'::jsonb)),
 		       r.author_id, r.project_id,
-		       m.proof_state, COALESCE(m.proof_reason, ''), m.plan_digest
+		       m.proof_state, COALESCE(m.proof_reason, ''), m.plan_digest,
+		       m.revert_proof_state, COALESCE(m.revert_proof_reason, '')
 		  FROM schemaver.change_request r
 		  JOIN schemaver.migration m ON m.change_request_id = r.id
 		 WHERE r.id = $1 AND r.project_id = ANY($2) AND m.superseded_at IS NULL
@@ -109,7 +114,7 @@ func (s *Scope) ApprovalState(ctx context.Context, requestID int64) (*ApprovalSt
 		 LIMIT 1`, requestID, s.projects).
 		Scan(&st.MigrationID, &st.FromFingerprint, &st.ToFingerprint,
 			&renames, &authorID, &projectID, &st.ProofState, &st.ProofReason,
-			&st.PlanDigest)
+			&st.PlanDigest, &st.RevertProofState, &st.RevertProofReason)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNoMigration
 	}
@@ -183,6 +188,15 @@ func (st *ApprovalState) evaluate() (bool, string) {
 	case st.ProofState == "failed":
 		return false, "this migration did not produce the schema it declares when " +
 			"applied to a throwaway copy: " + st.ProofReason
+	case st.RevertProofState == "pending":
+		return false, "the way back has not finished being checked yet"
+	case st.RevertProofState == "failed":
+		// Blocking on this is the point of generating a revert at all. A
+		// migration that can be executed but not undone is exactly the position
+		// D-012 exists to prevent somebody discovering during an incident, and
+		// an administrator can now edit the revert until it does lead back.
+		return false, "undoing this migration would not return the database to " +
+			"where it started: " + st.RevertProofReason
 	case st.Blocking > 0:
 		return false, "a reviewer has requested changes or rejected this migration"
 	case st.UnansweredRenames > 0:

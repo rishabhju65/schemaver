@@ -28,6 +28,10 @@ func (w *Worker) prove(ctx context.Context, migrationID int64) error {
 	}
 
 	if w.cfg.Shadow == nil {
+		if err := w.store.RecordRevertProof(ctx, migrationID, "unproven",
+			"no shadow server is configured"); err != nil {
+			return err
+		}
 		return w.store.RecordProof(ctx, migrationID, "unproven",
 			"no shadow server is configured, so this migration has not been "+
 				"checked against a throwaway copy of the database", nil)
@@ -39,16 +43,32 @@ func (w *Worker) prove(ctx context.Context, migrationID int64) error {
 	// point than the one the migration declares, which would make the proof
 	// answer a question nobody asked.
 	proof, err := w.cfg.Shadow.Prove(ctx, task.BaseDDL, task.Statements,
-		task.From, task.To)
+		task.Revert, task.From, task.To)
 
 	var badBase *shadow.BaseError
 	var badStep *shadow.StepError
 	var mismatch *shadow.MismatchError
+	var badRevert *shadow.RevertError
 	switch {
 	case err == nil:
 		w.log.Info("migration proved", "migration", migrationID,
-			"statements", len(task.Statements),
+			"statements", len(task.Statements), "revert", len(task.Revert),
 			"from", task.From.Short(), "to", task.To.Short())
+		if err := w.store.RecordRevertProof(ctx, migrationID, revertVerdict(task), ""); err != nil {
+			return err
+		}
+		return w.store.RecordProof(ctx, migrationID, "passed", "", proof.After)
+
+	case errors.As(err, &badRevert):
+		// The forward half is proven — it ran and verified before the revert
+		// was attempted — so it is recorded as passing. Only the way back
+		// failed, and saying otherwise would send somebody to change statements
+		// that are correct.
+		w.log.Warn("the revert does not lead back", "migration", migrationID,
+			"error", badRevert)
+		if err := w.store.RecordRevertProof(ctx, migrationID, "failed", badRevert.Error()); err != nil {
+			return err
+		}
 		return w.store.RecordProof(ctx, migrationID, "passed", "", proof.After)
 
 	case errors.As(err, &badBase):
@@ -93,4 +113,16 @@ func partial(p *shadow.Proof) []schema.Version {
 		return nil
 	}
 	return p.After
+}
+
+// revertVerdict reports what a clean proof establishes about the revert.
+//
+// A migration with no revert statements is not a migration whose revert was
+// proven: there was nothing to prove. Recording "passed" for it would claim a
+// check that never ran, which is the habit D-021 exists to have broken.
+func revertVerdict(task *store.ProofTask) string {
+	if len(task.Revert) == 0 {
+		return "unproven"
+	}
+	return "passed"
 }

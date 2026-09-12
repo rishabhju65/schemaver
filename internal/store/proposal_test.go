@@ -103,9 +103,13 @@ func TestProposeReviewApprove(t *testing.T) {
 	}
 	t.Logf("gate closed on the proof: %s", state.Reason)
 
-	// Stand in for the worker, which is not running here.
+	// Stand in for the worker, which is not running here. Both halves: the gate
+	// wants the migration proven and the way back shown to lead back.
 	if err := st.RecordProof(ctx, migrationID, "passed", "", nil); err != nil {
 		t.Fatalf("RecordProof: %v", err)
+	}
+	if err := st.RecordRevertProof(ctx, migrationID, "passed", ""); err != nil {
+		t.Fatalf("RecordRevertProof: %v", err)
 	}
 
 	// Before approval the gate must still be shut, and it must say why.

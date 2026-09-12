@@ -23,6 +23,9 @@ type Proof struct {
 	// recoverable incident and an investigation.
 	After []schema.Version
 	Final schema.Version
+	// RevertedTo is where the revert left the schema, when one was proven. A
+	// revert that works returns it to Base.
+	RevertedTo schema.Version
 }
 
 // StepError names the statement that would not apply.
@@ -82,7 +85,7 @@ func (e *BaseError) Unwrap() error { return e.Err }
 // find rows that violate a new constraint, cannot estimate duration, and says
 // nothing about lock behaviour under load. It must never be reported as
 // evidence that a migration is safe (D-009's scope cut).
-func (p *Pool) Prove(ctx context.Context, baseDDL string, statements []string, from, want schema.Version) (*Proof, error) {
+func (p *Pool) Prove(ctx context.Context, baseDDL string, statements, revert []string, from, want schema.Version) (*Proof, error) {
 	db, err := p.Create(ctx)
 	if err != nil {
 		return nil, err
@@ -128,8 +131,62 @@ func (p *Pool) Prove(ctx context.Context, baseDDL string, statements []string, f
 	if proof.Final != want {
 		return proof, &MismatchError{Want: want, Got: proof.Final}
 	}
+	if len(revert) == 0 {
+		return proof, nil
+	}
+
+	// The round trip. The forward migration has just been applied to this
+	// database, so it is sitting exactly where a real one would be when
+	// somebody asks to undo it — which makes this the only place the revert can
+	// be checked against the state it is actually for.
+	for i, sql := range revert {
+		if err := exec(ctx, conn, sql); err != nil {
+			return proof, &RevertError{Ordinal: i + 1, SQL: sql, Err: err}
+		}
+	}
+	if proof.RevertedTo, err = fingerprint(ctx, conn); err != nil {
+		return proof, &RevertError{Err: err}
+	}
+	if proof.RevertedTo != from {
+		return proof, &RevertError{Want: from, Got: proof.RevertedTo}
+	}
 	return proof, nil
 }
+
+// RevertError reports that the way back does not lead back.
+//
+// Held apart from every forward failure because it says nothing about the
+// migration: the forward statements have already been applied and verified by
+// the time this can happen. A migration whose revert will not round-trip is
+// still a correct migration, and describing it as a failed one would send
+// somebody to change the half that works.
+type RevertError struct {
+	Ordinal   int
+	SQL       string
+	Want, Got schema.Version
+	Err       error
+}
+
+func (e *RevertError) Error() string {
+	switch {
+	case e.Ordinal > 0:
+		sql := strings.TrimSpace(e.SQL)
+		if len(sql) > 120 {
+			sql = sql[:117] + "..."
+		}
+		return fmt.Sprintf("revert statement %d would not apply (%s): %v",
+			e.Ordinal, sql, e.Err)
+	case e.Err != nil:
+		return fmt.Sprintf("the schema could not be read back after reverting: %v", e.Err)
+	default:
+		return fmt.Sprintf(
+			"every revert statement applied, but the schema came back to %s rather "+
+				"than %s — undoing this migration would not return the database to "+
+				"where it started", e.Got.Short(), e.Want.Short())
+	}
+}
+
+func (e *RevertError) Unwrap() error { return e.Err }
 
 // exec runs one statement, or nothing at all if it is only a comment.
 //

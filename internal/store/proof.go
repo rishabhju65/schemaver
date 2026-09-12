@@ -24,6 +24,9 @@ type ProofTask struct {
 	// quietly prove a different starting point than the one declared.
 	BaseDDL    string
 	Statements []string
+	// Revert is the way back, proven as a round trip: applied to the shadow
+	// once the forward statements have, which is the only state it is for.
+	Revert []string
 }
 
 // ErrNoProofNeeded is returned when the migration has been superseded, or its
@@ -66,6 +69,24 @@ func (s *Store) LoadProofTask(ctx context.Context, migrationID int64) (*ProofTas
 		t.Statements = append(t.Statements, sql)
 	}
 	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	revert, err := s.pool.Query(ctx, `
+		SELECT sql FROM schemaver.migration_revert_step
+		 WHERE migration_id = $1 ORDER BY ordinal`, migrationID)
+	if err != nil {
+		return nil, fmt.Errorf("load revert statements: %w", err)
+	}
+	defer revert.Close()
+	for revert.Next() {
+		var sql string
+		if err := revert.Scan(&sql); err != nil {
+			return nil, fmt.Errorf("scan revert statement: %w", err)
+		}
+		t.Revert = append(t.Revert, sql)
+	}
+	if err := revert.Err(); err != nil {
 		return nil, err
 	}
 
@@ -156,4 +177,15 @@ func (s *Store) ExpectedAfter(ctx context.Context, migrationID int64) ([]schema.
 		out = append(out, schema.Version(fp))
 	}
 	return out, rows.Err()
+}
+
+// RecordRevertProof stores what the round trip established about the way back.
+func (s *Store) RecordRevertProof(ctx context.Context, migrationID int64, state, reason string) error {
+	if _, err := s.pool.Exec(ctx, `
+		UPDATE schemaver.migration
+		   SET revert_proof_state = $2, revert_proof_reason = NULLIF($3, '')
+		 WHERE id = $1`, migrationID, state, reason); err != nil {
+		return fmt.Errorf("record revert proof: %w", err)
+	}
+	return nil
 }
