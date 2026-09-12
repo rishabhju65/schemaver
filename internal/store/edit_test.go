@@ -46,7 +46,9 @@ func TestEditingWithdrawsApproval(t *testing.T) {
 		         WHERE m.project_id = i.project_id AND m.role = 'admin' LIMIT 1),
 		       (SELECT id FROM schemaver.database WHERE name = 'shop_prod'),
 		       (SELECT id FROM schemaver.database WHERE name = 'shop_staging')
-		  FROM schemaver.instance i LIMIT 1`).
+		  FROM schemaver.database d
+		  JOIN schemaver.instance i ON i.id = d.instance_id
+		 WHERE d.name = 'shop_prod'`).
 		Scan(&projectID, &userID, &target, &source); err != nil {
 		t.Skipf("no fixtures: %v", err)
 	}
