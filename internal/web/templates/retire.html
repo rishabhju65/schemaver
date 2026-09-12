@@ -1,0 +1,49 @@
+{{define "content"}}
+{{$p := .Preview}}
+<h1>Retire {{$p.DatabaseName}}</h1>
+<p class="sub">schemaver stops watching this database and stops accepting
+changes against it. Nothing is deleted — its snapshots, change requests,
+migrations and activity all stay readable.</p>
+
+{{if .Error}}<p class="banner err">{{.Error}}</p>{{end}}
+
+<div class="card pad">
+  {{if $p.Quiet}}
+  <p class="sub">Nothing is in flight against it, so retiring closes nothing.</p>
+  {{else}}
+  <p><b>Retiring will close:</b></p>
+  <div style="margin-top:10px">
+    {{if $p.CancelledJobs}}<div class="change">
+      <span class="cls lock_heavy">{{$p.CancelledJobs}}</span>
+      <div>queued or running job(s) cancelled, including any migration already
+      waiting to run</div></div>{{end}}
+    {{if $p.ClosedRequests}}<div class="change">
+      <span class="cls destructive">{{$p.ClosedRequests}}</span>
+      <div>open change request(s) closed. These are not reopened if the database
+      is restored — they were reviewed against a schema nobody will have looked
+      at since</div></div>{{end}}
+    {{if $p.ClosedDrift}}<div class="change">
+      <span class="cls additive">{{$p.ClosedDrift}}</span>
+      <div>open drift record(s) closed</div></div>{{end}}
+    {{if $p.UnpairedPeers}}<div class="change">
+      <span class="cls metadata_only">{{$p.UnpairedPeers}}</span>
+      <div>database(s) compare themselves against this one and will lose that
+      expectation. Left in place they would drift against a fingerprint that can
+      never move again</div></div>{{end}}
+  </div>
+  {{end}}
+
+  <form method="post" action="/databases/{{.DatabaseID}}/retire" style="margin-top:18px">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <p><label>Why is it being retired?<br>
+      <input type="text" name="reason" style="width:100%;max-width:520px"
+             placeholder="decommissioned, migrated to another cluster, …"></label></p>
+    <p style="margin-top:12px"><label>Type <b>{{$p.DatabaseName}}</b> to confirm.<br>
+      <input type="text" name="confirm" autocomplete="off"
+             style="width:100%;max-width:320px"></label></p>
+    <p style="margin-top:16px">
+      <button type="submit">Retire this database</button>
+      <a href="/" class="fp" style="margin-left:14px">Cancel</a></p>
+  </form>
+</div>
+{{end}}

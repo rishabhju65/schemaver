@@ -53,9 +53,14 @@ func (s *Scope) Instances(ctx context.Context) ([]InstanceRow, error) {
 
 // ManagedDatabase is one database on an instance, with how it is configured.
 type ManagedDatabase struct {
-	ID            int64
-	Name          string
+	ID   int64
+	Name string
+	// Managed is the soft toggle: whether schemaver watches this database.
+	// Retired is the end-state, and outranks it — a retired database is never
+	// managed, and the settings form must not offer to turn it back on.
 	Managed       bool
+	Retired       *time.Time
+	RetiredReason string
 	EnvironmentID *int64
 	PeerID        *int64
 	SizeBytes     int64
@@ -77,7 +82,8 @@ func (s *Scope) InstanceDetail(ctx context.Context, id int64) (*InstanceRow, []M
 	}
 
 	rows, err := s.store.pool.Query(ctx, `
-		SELECT id, name, managed, environment_id, expected_peer_id,
+		SELECT id, name, managed, retired_at, COALESCE(retired_reason, ''),
+		       environment_id, expected_peer_id,
 		       COALESCE(size_bytes, 0), COALESCE(last_error, '')
 		  FROM schemaver.database
 		 WHERE instance_id = $1 AND archived_at IS NULL
@@ -91,7 +97,8 @@ func (s *Scope) InstanceDetail(ctx context.Context, id int64) (*InstanceRow, []M
 	var dbs []ManagedDatabase
 	for rows.Next() {
 		var d ManagedDatabase
-		if err := rows.Scan(&d.ID, &d.Name, &d.Managed, &d.EnvironmentID,
+		if err := rows.Scan(&d.ID, &d.Name, &d.Managed, &d.Retired, &d.RetiredReason,
+			&d.EnvironmentID,
 			&d.PeerID, &d.SizeBytes, &d.LastError); err != nil {
 			return nil, nil, fmt.Errorf("scan database: %w", err)
 		}

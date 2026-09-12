@@ -16,8 +16,12 @@ observation cycle.</p>{{end}}
 <th>Compare against</th><th>State</th></tr>
 {{range .Databases}}
 <tr>
+  {{/* A retired database cannot be re-managed from here. Turning the checkbox
+       back on would put it under observation while every write path still
+       refused it, which reads as a bug rather than as a decision. Restoring is
+       its own action, on the fleet. */}}
   <td><input type="checkbox" name="managed" value="{{.ID}}" {{if .Managed}}checked{{end}}
-      {{if not $.CanWrite}}disabled{{end}}></td>
+      {{if or (not $.CanWrite) .Retired}}disabled{{end}}></td>
   <td>{{.Name}}<input type="hidden" name="db" value="{{.ID}}"></td>
   <td class="fp">{{mb .SizeBytes}}</td>
   <td>
@@ -38,7 +42,8 @@ observation cycle.</p>{{end}}
       {{end}}{{end}}
     </select>
   </td>
-  <td>{{if .LastError}}<span class="err">unreachable</span>
+  <td>{{if .Retired}}<span class="removed">retired</span>
+      {{else if .LastError}}<span class="err">unreachable</span>
       {{else if .Managed}}<span class="added">observed</span>
       {{else}}<span class="fp">not managed</span>{{end}}</td>
 </tr>

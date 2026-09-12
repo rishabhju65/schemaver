@@ -4,7 +4,7 @@
 <div class="card scroll">
 <table>
 <tr><th>Database</th><th>Instance</th><th>Environment</th><th>Version</th>
-<th>Changes</th><th>Drift</th><th>Last read</th><th>State</th></tr>
+<th>Changes</th><th>Drift</th><th>Last read</th><th>State</th><th></th></tr>
 {{range .Rows}}
 <tr>
   <td><a href="/database/{{.ID}}">{{.Name}}</a></td>
@@ -14,12 +14,29 @@
   <td>{{.Changes}}</td>
   <td>{{if .OpenDrifts}}<span class="removed">{{.OpenDrifts}} open</span>{{else}}<span class="fp">—</span>{{end}}</td>
   <td class="fp">{{ago .LastReadAt}}</td>
-  <td>{{if .LastError}}<span class="err">unreachable</span>
+  {{/* Retired outranks every other state: a retired database is never
+       managed, so reporting it as "not managed" would describe the symptom
+       and hide the decision. */}}
+  <td>{{if .Retired}}<span class="removed">retired</span>
+      {{else if .LastError}}<span class="err">unreachable</span>
       {{else if not .Managed}}<span class="fp">not managed</span>
       {{else}}<span class="added">ok</span>{{end}}</td>
+  <td class="fp">
+    {{if .Retired}}
+      {{if $.CanWrite}}
+      <form method="post" action="/databases/{{.ID}}/restore" style="display:inline">
+        <input type="hidden" name="csrf" value="{{$.CSRF}}">
+        <button type="submit" class="linky">Restore</button>
+      </form>
+      {{end}}
+      {{if .RetiredReason}}<br><span title="{{.RetiredReason}}">{{.RetiredReason}}</span>{{end}}
+    {{else if and $.CanWrite .Writable}}
+      <a href="/databases/{{.ID}}/retire">Retire</a>
+    {{end}}
+  </td>
 </tr>
 {{else}}
-<tr><td colspan="8" class="empty">No databases registered yet.</td></tr>
+<tr><td colspan="9" class="empty">No databases registered yet.</td></tr>
 {{end}}
 </table>
 </div>
