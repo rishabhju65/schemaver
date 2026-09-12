@@ -209,10 +209,9 @@ func (e *Executor) Execute(ctx context.Context, x *store.Execution) (Outcome, er
 		return Outcome{
 			State: StateNeedsAttention, StepsApplied: applied, Final: after,
 			Reason: fmt.Sprintf(
-				"statement %d failed after %d had already applied, and the database is "+
-					"at %s — neither its start (%s) nor its target (%s). A human must "+
+				"statement %d failed after %d had already applied. %s A human must "+
 					"decide whether to roll forward or back. Cause: %v",
-				applied+1, applied, after.Short(), x.From.Short(), x.To.Short(), runErr),
+				applied+1, applied, placement(x, after, applied), runErr),
 		}, nil
 
 	case after != x.To:
@@ -226,10 +225,8 @@ func (e *Executor) Execute(ctx context.Context, x *store.Execution) (Outcome, er
 			State: StateNeedsAttention, StepsApplied: applied, Final: after,
 			Reason: fmt.Sprintf(
 				"every statement succeeded but the database is at %s, not the declared "+
-					"target %s. The shadow proof passed for this migration, so either "+
-					"something changed outside schemaver while it ran, or an assumption "+
-					"is wrong. Do not retry until this is understood",
-				after.Short(), x.To.Short()),
+					"target %s. %s Do not retry until this is understood",
+				after.Short(), x.To.Short(), provenance(x)),
 		}, nil
 	}
 
@@ -458,4 +455,58 @@ func recordApplied(ctx context.Context, conn *pgx.Conn, x *store.Execution, stat
 // Summarise renders an outcome for a log line.
 func (o Outcome) Summarise() string {
 	return strings.Join([]string{o.State, o.Reason}, ": ")
+}
+
+// placement says where a half-applied migration actually stopped.
+//
+// The proof recorded the fingerprint each statement should leave behind, so a
+// database sitting at one of those values places the failure exactly: these
+// statements took effect and those did not. Without a proof the best that can
+// be said is that it is somewhere between the start and the target, which is
+// the difference between a recoverable incident and an investigation.
+func placement(x *store.Execution, after schema.Version, applied int) string {
+	for i, want := range x.Expected {
+		if want != "" && want == after {
+			return fmt.Sprintf(
+				"The database is at %s, which the proof recorded as the state after "+
+					"statement %d — so statements 1 to %d took effect and %d to %d did not.",
+				after.Short(), i+1, i+1, i+2, len(x.Steps))
+		}
+	}
+	if after == x.From {
+		return fmt.Sprintf(
+			"The database is back at its start (%s), so nothing took effect.",
+			x.From.Short())
+	}
+	if len(x.Expected) == 0 {
+		return fmt.Sprintf(
+			"The database is at %s — neither its start (%s) nor its target (%s). "+
+				"This migration was never proven against a throwaway copy, so there "+
+				"is no record of what each statement should have left behind and the "+
+				"failure cannot be placed more precisely.",
+			after.Short(), x.From.Short(), x.To.Short())
+	}
+	return fmt.Sprintf(
+		"The database is at %s, which matches neither its start (%s), its target "+
+			"(%s), nor any state the proof recorded after a statement — so it holds "+
+			"something this migration alone did not produce.",
+		after.Short(), x.From.Short(), x.To.Short())
+}
+
+// provenance says whether the migration had been proven, when every statement
+// applied and the result was still wrong.
+//
+// This message is read at the worst moment there is, and it used to assert that
+// a shadow proof had passed whether or not one had ever run. An unproven
+// migration reaching a wrong schema has an ordinary explanation; a proven one
+// does not, and the reader needs to know which of those they are looking at.
+func provenance(x *store.Execution) string {
+	if len(x.Expected) == 0 {
+		return "This migration was never proven against a throwaway copy, so this " +
+			"may simply be a change schemaver cannot express as SQL — look for a " +
+			"statement rendered as a comment."
+	}
+	return "This migration was proven against a throwaway copy built at its " +
+		"starting point, so either something changed outside schemaver while it " +
+		"ran, or an assumption is wrong."
 }
