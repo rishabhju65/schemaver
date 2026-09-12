@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strings"
 	"time"
 )
 
@@ -82,14 +83,117 @@ var passwordField = regexp.MustCompile(`(?i)\b(password)\s*=\s*(?:'[^']*'|"[^"]*
 // string quoted back by a failed connection, and a password= keyword echoed by
 // the driver; both arrive inside error text that no one composed deliberately,
 // which is exactly why the boundary cannot be the caller's responsibility.
-//
-// Query text is a different problem and not one redaction can solve — a
-// blocking statement's WHERE clause may hold real customer data, and there is
-// no pattern that distinguishes it from a table name. That is a reason to think
-// about what is captured, not something to strip here.
 func redact(s string) string {
 	s = dsnPassword.ReplaceAllString(s, "${1}[redacted]${2}")
 	return passwordField.ReplaceAllString(s, "${1}=[redacted]")
+}
+
+// ScrubLiterals removes the values from a SQL statement, keeping its shape.
+//
+// Query text captured from another session is the one thing in this log written
+// by somebody who never agreed to have it recorded. A blocking statement's
+// WHERE clause can hold an email address, a card's last four digits, a person's
+// name — and it lands in a table that is kept indefinitely and never updated.
+//
+// Redacting patterns does not help: there is no expression that tells a
+// customer's surname from a column called surname. What does help is that the
+// values are never the useful part. Somebody looking at a blocked migration
+// needs to know which table the blocker touched and roughly what it was doing,
+// and "SELECT ... FROM orders WHERE email = '?'" carries all of that. So the
+// literals go, rather than being guessed at.
+//
+// Quoted identifiers are left alone — "Orders" is a table name, not data — and
+// dollar-quoted bodies are replaced wholesale, since a function body can
+// contain anything at all.
+func ScrubLiterals(sql string) string {
+	var b strings.Builder
+	b.Grow(len(sql))
+
+	for i := 0; i < len(sql); {
+		switch c := sql[i]; {
+		case c == '\'':
+			// A single-quoted string, where '' is an escaped quote rather than
+			// the end of one.
+			i++
+			for i < len(sql) {
+				if sql[i] == '\'' {
+					if i+1 < len(sql) && sql[i+1] == '\'' {
+						i += 2
+						continue
+					}
+					i++
+					break
+				}
+				i++
+			}
+			b.WriteString("'?'")
+
+		case c == '"':
+			// A quoted identifier. Copied through: it names something.
+			b.WriteByte(c)
+			i++
+			for i < len(sql) {
+				b.WriteByte(sql[i])
+				if sql[i] == '"' {
+					i++
+					break
+				}
+				i++
+			}
+
+		case c == '$':
+			if tag, end, ok := dollarTag(sql, i); ok {
+				if close := strings.Index(sql[end:], tag); close >= 0 {
+					b.WriteString(tag + "?" + tag)
+					i = end + close + len(tag)
+					continue
+				}
+			}
+			b.WriteByte(c)
+			i++
+
+		case c >= '0' && c <= '9' && !identifierByte(prevByte(sql, i)):
+			// A number, but only where one can start — so column_1 keeps its
+			// name and LIMIT 100 loses its bound.
+			for i < len(sql) && (sql[i] == '.' || (sql[i] >= '0' && sql[i] <= '9')) {
+				i++
+			}
+			b.WriteByte('?')
+
+		default:
+			b.WriteByte(c)
+			i++
+		}
+	}
+	return b.String()
+}
+
+// dollarTag reads a $$ or $tag$ opener at i, returning the tag and the offset
+// just past it.
+func dollarTag(s string, i int) (string, int, bool) {
+	j := i + 1
+	for j < len(s) && (s[j] == '_' || isLetter(s[j]) || (s[j] >= '0' && s[j] <= '9')) {
+		j++
+	}
+	if j < len(s) && s[j] == '$' {
+		return s[i : j+1], j + 1, true
+	}
+	return "", 0, false
+}
+
+func prevByte(s string, i int) byte {
+	if i == 0 {
+		return ' '
+	}
+	return s[i-1]
+}
+
+func isLetter(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+}
+
+func identifierByte(c byte) bool {
+	return c == '_' || isLetter(c) || (c >= '0' && c <= '9')
 }
 
 // Record writes one entry to the activity log.

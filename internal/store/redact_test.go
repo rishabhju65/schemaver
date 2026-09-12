@@ -59,3 +59,55 @@ func TestRedactStripsCredentials(t *testing.T) {
 		}
 	}
 }
+
+// TestScrubLiteralsKeepsShapeAndDropsValues covers the one thing in the
+// activity log written by somebody who never agreed to be recorded: the query
+// text of a session that happened to be blocking a migration.
+func TestScrubLiteralsKeepsShapeAndDropsValues(t *testing.T) {
+	for _, c := range []struct{ in, want string }{
+		{
+			`SELECT * FROM orders WHERE email = 'ada@example.com'`,
+			`SELECT * FROM orders WHERE email = '?'`,
+		},
+		{
+			// An escaped quote must not end the string early, or everything
+			// after it leaks through as if it were SQL.
+			`UPDATE users SET name = 'O''Hara' WHERE id = 42`,
+			`UPDATE users SET name = '?' WHERE id = ?`,
+		},
+		{
+			// Identifiers are what a reader needs; they survive.
+			`SELECT "Order_2" FROM "Public"."Orders" WHERE total > 99.95`,
+			`SELECT "Order_2" FROM "Public"."Orders" WHERE total > ?`,
+		},
+		{
+			// A digit inside a name is part of the name, not a value.
+			`SELECT column_1, addr2 FROM t1 LIMIT 100`,
+			`SELECT column_1, addr2 FROM t1 LIMIT ?`,
+		},
+		{
+			// A function body can contain anything, so it goes wholesale.
+			`CREATE FUNCTION f() RETURNS int AS $$ SELECT 'secret' $$ LANGUAGE sql`,
+			`CREATE FUNCTION f() RETURNS int AS $$?$$ LANGUAGE sql`,
+		},
+		{
+			// The shape a person actually reads off a blocked migration.
+			`BEGIN; SELECT count(*) FROM orders WHERE created_at > '2026-01-01'`,
+			`BEGIN; SELECT count(*) FROM orders WHERE created_at > '?'`,
+		},
+	} {
+		if got := ScrubLiterals(c.in); got != c.want {
+			t.Errorf("scrubbing\n  in:   %s\n  got:  %s\n  want: %s", c.in, got, c.want)
+		}
+	}
+
+	// The property that matters more than any single case: no run of letters
+	// from inside a quoted string may survive.
+	secret := `SELECT * FROM people WHERE surname = 'Lovelace' AND card = '4111111111111111'`
+	got := ScrubLiterals(secret)
+	for _, leaked := range []string{"Lovelace", "4111111111111111"} {
+		if strings.Contains(got, leaked) {
+			t.Errorf("%q survived scrubbing: %s", leaked, got)
+		}
+	}
+}

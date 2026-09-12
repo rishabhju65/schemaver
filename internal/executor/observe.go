@@ -105,6 +105,11 @@ func sample(ctx context.Context, conn *pgx.Conn, pid int32) (*store.Progress, er
 		v := *percent
 		p.Percent = &v
 	}
+	// Scrubbed at capture, not at display. This is somebody else's statement,
+	// recorded without their involvement into a log that is kept indefinitely;
+	// the table it touches is what a reader needs and the values are never the
+	// useful part.
+	p.BlockerQuery = store.ScrubLiterals(p.BlockerQuery)
 	return &p, nil
 }
 
