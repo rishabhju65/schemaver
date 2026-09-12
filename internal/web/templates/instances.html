@@ -2,7 +2,16 @@
 <h1>Servers</h1>
 <p class="sub">PostgreSQL servers schemaver observes. Registering one discovers
 its databases; managing them is a separate, deliberate choice.</p>
-{{if .CanWrite}}<p><a class="btn" href="/instances/new">Add a server</a></p>{{end}}
+{{if .CanWrite}}<p><a class="btn" href="/instances/new">Add a server</a></p>
+{{else if .OrgWide}}
+{{/* A control that is simply absent reads as a missing feature. The org-wide
+     view is deliberately read-only, so it should say so where the button
+     would have been. */}}
+<p class="banner">Looking across every project, which is read-only. Pick a
+single project in the header to add a server.</p>
+{{else}}
+<p class="sub">Only a project administrator can add a server.</p>
+{{end}}
 <div class="card scroll">
 <table>
 <tr><th>Name</th><th>Endpoint</th><th>Role</th><th>TLS</th>
@@ -18,7 +27,9 @@ its databases; managing them is a separate, deliberate choice.</p>
   <td class="fp">{{ago .LastSeen}}</td>
 </tr>
 {{else}}
-<tr><td colspan="7" class="empty">No servers registered yet.</td></tr>
+<tr><td colspan="7" class="empty">No servers registered yet.
+  {{if .CanWrite}}Adding one connects to it, checks the grants it needs, and
+  lists the databases it holds.{{end}}</td></tr>
 {{end}}
 </table>
 </div>

@@ -141,3 +141,44 @@ func TestRequestPageRenders(t *testing.T) {
 		}
 	}
 }
+
+// TestEmptyStatesOfferAWayForward executes the pages a first-time visitor sees
+// before anything exists.
+//
+// An empty table that says only "nothing here" is where onboarding goes to die:
+// registering a server lives behind Servers, which is not where anyone would
+// look for it, and the control that gets there is hidden entirely in the
+// organisation-wide view. A control that is simply absent reads as a missing
+// feature rather than as a deliberate restriction, so each case has to say
+// which one it is.
+func TestEmptyStatesOfferAWayForward(t *testing.T) {
+	s := server(t, auth.Completed(), false)
+
+	for _, c := range []struct {
+		page     string
+		canWrite bool
+		orgWide  bool
+		want     string
+	}{
+		{"fleet", true, false, "/instances/new"},
+		{"fleet", false, true, "read-only"},
+		{"fleet", false, false, "Ask a project administrator"},
+		{"instances", true, false, "/instances/new"},
+		{"instances", false, true, "read-only"},
+		{"instances", false, false, "Only a project administrator"},
+	} {
+		var out strings.Builder
+		err := s.tmpl[c.page].ExecuteTemplate(&out, "layout", map[string]any{
+			"Rows": nil, "Entries": nil,
+			"CanWrite": c.canWrite, "OrgWide": c.orgWide,
+			"Title": c.page, "Nav": c.page, "CSRF": "t",
+		})
+		if err != nil {
+			t.Fatalf("%s (canWrite=%v orgWide=%v): %v", c.page, c.canWrite, c.orgWide, err)
+		}
+		if !strings.Contains(out.String(), c.want) {
+			t.Errorf("the empty %s page (canWrite=%v orgWide=%v) does not mention %q",
+				c.page, c.canWrite, c.orgWide, c.want)
+		}
+	}
+}

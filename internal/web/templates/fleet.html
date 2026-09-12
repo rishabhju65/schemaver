@@ -36,7 +36,17 @@
   </td>
 </tr>
 {{else}}
-<tr><td colspan="9" class="empty">No databases registered yet.</td></tr>
+{{/* The landing page of an empty deployment. Saying only that there is
+     nothing here leaves a first-time visitor with no next step: onboarding
+     lives behind Servers, which is not a place you would look for it. */}}
+<tr><td colspan="9" class="empty">
+  No databases yet.
+  {{if .CanWrite}}<a href="/instances/new">Add a PostgreSQL server</a> — schemaver
+  discovers the databases on it, and you choose which to manage.
+  {{else if .OrgWide}}You are looking across every project, which is read-only.
+  Pick a single project above to add a server.
+  {{else}}Ask a project administrator to add a server.{{end}}
+</td></tr>
 {{end}}
 </table>
 </div>
