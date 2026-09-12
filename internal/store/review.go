@@ -75,6 +75,10 @@ type ApprovalState struct {
 	// PlanDigest identifies the statements this state describes. A decision
 	// recorded against a different one is not evidence about these.
 	PlanDigest string
+	// RevertWritten reports that somebody has written the way back. Nothing
+	// generates one any more (D-022), so its absence is a person's omission
+	// rather than a limit of the engine.
+	RevertWritten bool
 	// StaleDecisions counts decisions made about statements that have since
 	// been edited. Shown rather than hidden: somebody did read this, and the
 	// page should say their reading no longer applies rather than pretend it
@@ -106,7 +110,8 @@ func (s *Scope) ApprovalState(ctx context.Context, requestID int64) (*ApprovalSt
 		           COALESCE(NULLIF(m.rename_candidates, 'null'::jsonb), '[]'::jsonb)),
 		       r.author_id, r.project_id,
 		       m.proof_state, COALESCE(m.proof_reason, ''), m.plan_digest,
-		       m.revert_proof_state, COALESCE(m.revert_proof_reason, '')
+		       m.revert_proof_state, COALESCE(m.revert_proof_reason, ''),
+		       m.revert_authored_at IS NOT NULL
 		  FROM schemaver.change_request r
 		  JOIN schemaver.migration m ON m.change_request_id = r.id
 		 WHERE r.id = $1 AND r.project_id = ANY($2) AND m.superseded_at IS NULL
@@ -114,7 +119,8 @@ func (s *Scope) ApprovalState(ctx context.Context, requestID int64) (*ApprovalSt
 		 LIMIT 1`, requestID, s.projects).
 		Scan(&st.MigrationID, &st.FromFingerprint, &st.ToFingerprint,
 			&renames, &authorID, &projectID, &st.ProofState, &st.ProofReason,
-			&st.PlanDigest, &st.RevertProofState, &st.RevertProofReason)
+			&st.PlanDigest, &st.RevertProofState, &st.RevertProofReason,
+			&st.RevertWritten)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNoMigration
 	}
@@ -182,6 +188,12 @@ func (s *Scope) ApprovalState(ctx context.Context, requestID int64) (*ApprovalSt
 // evaluate applies the gate, in the order a reader would ask the questions.
 func (st *ApprovalState) evaluate() (bool, string) {
 	switch {
+	case !st.RevertWritten:
+		// Checked before the proof, because this is the author's to fix and the
+		// proof is the machine's. Telling somebody to wait for a check that
+		// cannot pass is worse than telling them what is missing.
+		return false, "no way back has been written for this migration; whoever " +
+			"wrote the change writes the revert, and a reviewer reads both"
 	case st.ProofState == "pending":
 		return false, "this migration has not finished being proven against a " +
 			"throwaway copy of the database yet"
@@ -322,6 +334,32 @@ func (s *Scope) Decide(ctx context.Context, requestID, reviewerID int64, verdict
 			   SET state = $2, state_reason = $3, updated_at = now()
 			 WHERE id = $1`, requestID, next, reason); err != nil {
 			return fmt.Errorf("update request state: %w", err)
+		}
+	}
+
+	// An administrator's approval is what sends the migration to be rehearsed.
+	// Until somebody has agreed it should run at all, there is nothing worth
+	// spending a shadow database on — and putting the run here makes it the
+	// last gate before production, which is what it is for (D-022).
+	if verdict == "approve" && role == auth.Admin {
+		if _, err := s.store.pool.Exec(ctx, `
+			UPDATE schemaver.change_request
+			   SET state = 'STAGE_SANITY',
+			       state_reason = 'rehearsing against a throwaway copy before production',
+			       updated_at = now()
+			 WHERE id = $1 AND state IN ('IN_REVIEW', 'INITIATED', 'CHANGES_REQUESTED')`,
+			requestID); err != nil {
+			return fmt.Errorf("advance to rehearsal: %w", err)
+		}
+		if _, err := s.store.pool.Exec(ctx, `
+			INSERT INTO schemaver.job
+			    (kind, target_kind, target_id, weight, idempotency_key)
+			VALUES ('prove', 'migration', $1, 1, $2)
+			ON CONFLICT (idempotency_key) DO UPDATE
+			   SET state = 'pending', run_after = now(), error = NULL,
+			       finished_at = NULL`,
+			migrationID, fmt.Sprintf("prove:%d", migrationID)); err != nil {
+			return fmt.Errorf("queue the rehearsal: %w", err)
 		}
 	}
 

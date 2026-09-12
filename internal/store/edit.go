@@ -199,3 +199,92 @@ func digestSteps(ctx context.Context, tx pgx.Tx, table string, migrationID int64
 func concurrent(sql string) bool {
 	return strings.Contains(strings.ToUpper(sql), "CONCURRENTLY")
 }
+
+// WriteRevert replaces the way back with what somebody has written.
+//
+// Taken as one block and split on statement boundaries rather than edited a
+// statement at a time. Somebody writing a rollback is writing a script: they
+// think in whole sequences, paste from an editor, and reorder freely, and
+// making them do that a box at a time would be the interface fighting the task.
+//
+// Anyone who can change the request may write it — this is authoring, not
+// approving. Like every edit it recomputes the plan digest, so writing or
+// rewriting a revert withdraws the approvals that were given for the previous
+// one and sends the migration back to be proven.
+func (s *Scope) WriteRevert(ctx context.Context, actorID, migrationID int64, sql string) error {
+	if err := s.requireWrite(); err != nil {
+		return err
+	}
+
+	var projectID, requestID int64
+	var state string
+	err := s.store.pool.QueryRow(ctx, `
+		SELECT r.project_id, r.id, r.state
+		  FROM schemaver.migration m
+		  JOIN schemaver.change_request r ON r.id = m.change_request_id
+		 WHERE m.id = $1 AND r.project_id = ANY($2) AND m.superseded_at IS NULL`,
+		migrationID, s.projects).Scan(&projectID, &requestID, &state)
+	if err != nil {
+		return fmt.Errorf("load migration: %w", err)
+	}
+	switch state {
+	case "READY_TO_EXECUTE", "EXECUTING", "COMPLETED", "CLOSED", "NEEDS_ATTENTION":
+		return ErrNotEditable
+	}
+
+	statements := SplitStatements(sql)
+
+	tx, err := s.store.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Replaced wholesale rather than merged. A revert is one script, and
+	// reconciling a rewrite against the statements it replaced would be
+	// guessing at an intent the author has already expressed plainly.
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM schemaver.migration_revert_step WHERE migration_id = $1`,
+		migrationID); err != nil {
+		return fmt.Errorf("clear the previous revert: %w", err)
+	}
+	for i, st := range statements {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO schemaver.migration_revert_step
+			    (migration_id, ordinal, sql, change_id, transactional)
+			VALUES ($1, $2, $3, 'revert', $4)`,
+			migrationID, i+1, st, !concurrent(st)); err != nil {
+			return fmt.Errorf("store revert statement %d: %w", i+1, err)
+		}
+	}
+
+	digest, err := recomputeDigest(ctx, tx, migrationID)
+	if err != nil {
+		return err
+	}
+	authored := len(statements) > 0
+	if _, err := tx.Exec(ctx, `
+		UPDATE schemaver.migration
+		   SET plan_digest = $2,
+		       proof_state = 'pending', proof_reason = NULL, proved_at = NULL,
+		       revert_proof_state = 'pending', revert_proof_reason = NULL,
+		       revert_authored_at = CASE WHEN $3 THEN now() END,
+		       revert_author_id = CASE WHEN $3 THEN $4::bigint END
+		 WHERE id = $1`, migrationID, digest, authored, actorID); err != nil {
+		return fmt.Errorf("record the revert: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+
+	what := fmt.Sprintf("wrote a revert of %d statement(s)", len(statements))
+	if !authored {
+		what = "removed the revert"
+	}
+	s.record(ctx, Warn("revert.written", what+
+		"; approvals withdrawn and the migration must be proven again").
+		By(actorID).
+		OnRequest(requestID).
+		OnMigration(migrationID))
+	return nil
+}

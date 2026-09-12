@@ -40,7 +40,7 @@ func TestBlockingVerdicts(t *testing.T) {
 
 // TestGateRefusesWithoutAdministratorApproval covers the stated rule directly.
 func TestGateRefusesWithoutAdministratorApproval(t *testing.T) {
-	st := &ApprovalState{}
+	st := &ApprovalState{RevertWritten: true}
 	ok, reason := st.evaluate()
 	if ok {
 		t.Error("executable with no approval at all")
@@ -58,7 +58,7 @@ func TestGateRefusesWithoutAdministratorApproval(t *testing.T) {
 // TestBlockingBeatsApproval checks a rejection is not outvoted by an approval.
 // Review is a veto, not a poll.
 func TestBlockingBeatsApproval(t *testing.T) {
-	st := &ApprovalState{AdminApprovals: 3, Blocking: 1}
+	st := &ApprovalState{RevertWritten: true, AdminApprovals: 3, Blocking: 1}
 	ok, reason := st.evaluate()
 	if ok {
 		t.Error("three approvals outvoted a rejection")
@@ -71,7 +71,7 @@ func TestBlockingBeatsApproval(t *testing.T) {
 // TestUnansweredRenamesBlockExecution is the data-loss guard. An approval cannot
 // substitute for answering whether a column is being renamed or destroyed.
 func TestUnansweredRenamesBlockExecution(t *testing.T) {
-	st := &ApprovalState{AdminApprovals: 2, UnansweredRenames: 1}
+	st := &ApprovalState{RevertWritten: true, AdminApprovals: 2, UnansweredRenames: 1}
 	ok, reason := st.evaluate()
 	if ok {
 		t.Error("executable with an unanswered rename question")
@@ -88,13 +88,13 @@ func TestUnansweredRenamesBlockExecution(t *testing.T) {
 // than a missing approval, because the approval would be pointless until it is
 // resolved.
 func TestReasonOrderIsMostActionableFirst(t *testing.T) {
-	everything := &ApprovalState{Blocking: 1, UnansweredRenames: 2, AdminApprovals: 0}
+	everything := &ApprovalState{RevertWritten: true, Blocking: 1, UnansweredRenames: 2, AdminApprovals: 0}
 	_, reason := everything.evaluate()
 	if !strings.Contains(reason, "requested changes") && !strings.Contains(reason, "rejected") {
 		t.Errorf("with several problems, the reviewer objection should lead: %s", reason)
 	}
 
-	noBlock := &ApprovalState{UnansweredRenames: 2, AdminApprovals: 0}
+	noBlock := &ApprovalState{RevertWritten: true, UnansweredRenames: 2, AdminApprovals: 0}
 	if _, reason := noBlock.evaluate(); !strings.Contains(reason, "rename") {
 		t.Errorf("renames should lead over a missing approval: %s", reason)
 	}
@@ -103,15 +103,17 @@ func TestReasonOrderIsMostActionableFirst(t *testing.T) {
 // TestExecutableRequiresEverything is the whole gate, asserted in one place so a
 // future condition cannot be added without deciding how it interacts.
 func TestExecutableRequiresEverything(t *testing.T) {
-	ready := &ApprovalState{AdminApprovals: 1}
+	ready := &ApprovalState{RevertWritten: true, AdminApprovals: 1}
 	if ok, reason := ready.evaluate(); !ok {
 		t.Fatalf("a clean state should be executable: %s", reason)
 	}
 
 	for name, st := range map[string]*ApprovalState{
-		"no approval":       {},
-		"blocked":           {AdminApprovals: 1, Blocking: 1},
-		"unanswered rename": {AdminApprovals: 1, UnansweredRenames: 1},
+		"no approval":       {RevertWritten: true},
+		"blocked":           {RevertWritten: true, AdminApprovals: 1, Blocking: 1},
+		"unanswered rename": {RevertWritten: true, AdminApprovals: 1, UnansweredRenames: 1},
+		// The author's half, which no amount of approving substitutes for.
+		"no way back": {AdminApprovals: 1},
 	} {
 		if ok, _ := st.evaluate(); ok {
 			t.Errorf("%s: should not be executable", name)

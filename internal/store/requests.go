@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -120,15 +121,17 @@ type RequestDetail struct {
 	RollbackRefusal string
 }
 
-// RevertLosesData reports that undoing would not restore everything, so the
-// page can say so once at the top rather than only per statement.
-func (d *RequestDetail) RevertLosesData() bool {
+// HasRevert reports that somebody has written a way back.
+func (d *RequestDetail) HasRevert() bool { return len(d.Revert) > 0 }
+
+// RevertSQL is the way back as one script, for editing. Round-trips through
+// the same splitting it came from, so what somebody sees is what is stored.
+func (d *RequestDetail) RevertSQL() string {
+	parts := make([]string, 0, len(d.Revert))
 	for _, st := range d.Revert {
-		if st.StructureOnly {
-			return true
-		}
+		parts = append(parts, st.SQL)
 	}
-	return false
+	return strings.Join(parts, "\n")
 }
 
 // Execution is the most recent attempt, or nil if there has never been one.

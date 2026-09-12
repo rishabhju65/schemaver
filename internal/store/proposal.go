@@ -141,13 +141,9 @@ func (s *Scope) GenerateMigration(ctx context.Context, actorID, requestID int64)
 		return 0, fmt.Errorf("serialize rename candidates: %w", err)
 	}
 
-	// The way back, derived and stored beside the way forward so a reviewer
-	// reads both before approving either (D-012). Generated here rather than on
-	// demand because it is evidence about this fingerprint pair: regenerating
-	// the migration must produce a new revert, and one computed later could be
-	// computed against schemas that have since moved.
-	revertSteps, _ := buildRevert(result, statements, from, to)
-
+	// No revert is generated. Whoever writes the change writes the way back
+	// (D-022), so the digest covers the forward statements and whatever revert
+	// has been authored so far — which at generation time is none.
 	forwardSteps := make([]Step, 0, len(statements))
 	for i, st := range statements {
 		forwardSteps = append(forwardSteps, Step{
@@ -155,7 +151,7 @@ func (s *Scope) GenerateMigration(ctx context.Context, actorID, requestID int64)
 			Transactional: st.Transactional, Note: st.Note,
 		})
 	}
-	digest := planDigest(forwardSteps, revertSteps)
+	digest := planDigest(forwardSteps, nil)
 
 	tx, err := s.store.pool.Begin(ctx)
 	if err != nil {
@@ -182,20 +178,6 @@ func (s *Scope) GenerateMigration(ctx context.Context, actorID, requestID int64)
 		return 0, fmt.Errorf("store migration: %w", err)
 	}
 
-	// Stored beside the way forward so a reviewer reads both before approving
-	// either (D-012).
-	for _, st := range revertSteps {
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO schemaver.migration_revert_step
-			    (migration_id, ordinal, sql, change_id, transactional, note,
-			     structure_only, undoes_ordinal)
-			VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), $7, NULLIF($8, 0))`,
-			migrationID, st.Ordinal, st.SQL, st.ChangeID, st.Transactional,
-			st.Note, st.StructureOnly, st.Undoes); err != nil {
-			return 0, fmt.Errorf("store revert step %d: %w", st.Ordinal, err)
-		}
-	}
-
 	for i, st := range statements {
 		// expected_after is left null: the fingerprint chain needs each step
 		// simulated in a shadow database, which the executor will do when it
@@ -210,34 +192,17 @@ func (s *Scope) GenerateMigration(ctx context.Context, actorID, requestID int64)
 		}
 	}
 
-	// STAGE_SANITY rather than IN_REVIEW: the migration has been written but
-	// not yet shown to produce the schema it claims, and there is no point
-	// asking people to read something that may not apply at all. The proof
-	// moves it on, either to review or back to its author.
+	// Straight to review. The shadow runs after approval rather than before it
+	// (D-022): with a revert somebody has to write, review is about judgement,
+	// and the staging run belongs where it is the last gate before production
+	// rather than a precondition of reading.
 	if _, err := tx.Exec(ctx, `
 		UPDATE schemaver.change_request
-		   SET state = 'STAGE_SANITY',
-		       state_reason = 'proving this migration against a throwaway copy',
-		       updated_at = now()
+		   SET state = 'IN_REVIEW', state_reason = NULL, updated_at = now()
 		 WHERE id = $1`, requestID); err != nil {
 		return 0, fmt.Errorf("advance request: %w", err)
 	}
 
-	// Queued inside the same transaction that writes the migration, so a
-	// migration cannot exist without the proof that examines it being asked
-	// for. Keyed on the migration id, which is new for every regeneration.
-	//
-	// No instance: a proof touches the shadow server and never the database it
-	// describes, so charging it against that instance's connection budget would
-	// hold up real work to pay for connections it does not open.
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO schemaver.job
-		    (kind, target_kind, target_id, weight, idempotency_key)
-		VALUES ('prove', 'migration', $1, 1, $2)
-		ON CONFLICT (idempotency_key) DO NOTHING`,
-		migrationID, fmt.Sprintf("prove:%d", migrationID)); err != nil {
-		return 0, fmt.Errorf("enqueue proof: %w", err)
-	}
 	if err := tx.Commit(ctx); err != nil {
 		return 0, fmt.Errorf("commit: %w", err)
 	}

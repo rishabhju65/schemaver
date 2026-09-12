@@ -16,27 +16,26 @@ var ErrNothingToRollBack = errors.New(
 
 // ErrCannotPlace is returned when the database is somewhere the revert cannot
 // start from.
+//
+// A written revert is written for one state: the one the migration was supposed
+// to reach. Unlike a generated one it cannot be cut down, because nothing knows
+// which of its statements undoes which part of the change, so there is no
+// honest way to run some of it against a database that stopped part way.
 var ErrCannotPlace = errors.New(
-	"this database is not at the migration's target, nor at any state the proof " +
-		"recorded after one of its statements, so it holds something this migration " +
-		"alone did not produce; a rollback cannot be composed for it")
+	"this database is not at the migration's target, so the revert was not " +
+		"written for where it now is; a migration that stopped part way has to be " +
+		"resolved by hand")
+
+// ErrNoRevert is returned when nobody has written one.
+var ErrNoRevert = errors.New("no revert has been written for this migration")
 
 // Rollback describes what undoing would run.
 type Rollback struct {
 	MigrationID int64
 	RequestID   int64
-	// Applied is how many forward statements took effect, established by
-	// matching the live schema against the proof's fingerprint chain.
-	Applied int
-	Total   int
-	// Partial reports that the migration stopped part way, so only some of the
-	// revert applies.
-	Partial bool
 	// From is where the database is now; To is where undoing would leave it.
 	From, To schema.Version
 	Steps    []RevertStep
-	// LosesData reports that undoing restores shape without contents.
-	LosesData bool
 }
 
 // PlanRollback works out what undoing this migration would mean, given where
@@ -70,51 +69,18 @@ func (s *Scope) PlanRollback(ctx context.Context, migrationID int64) (*Rollback,
 	}
 	r.From, r.To = schema.Version(live), schema.Version(from)
 
-	steps, err := s.RevertSteps(ctx, migrationID)
-	if err != nil {
-		return nil, err
-	}
-	chain, err := s.store.ExpectedAfter(ctx, migrationID)
-	if err != nil {
-		return nil, err
-	}
-	r.Total = len(chain)
-
 	switch {
 	case live == from:
 		return nil, ErrNothingToRollBack
-	case live == to:
-		// Everything applied: the whole revert, which is the one a reviewer
-		// read in full.
-		r.Applied = len(chain)
-	default:
-		placed := -1
-		for i, fp := range chain {
-			if fp != "" && string(fp) == live {
-				placed = i + 1
-			}
-		}
-		if placed < 0 {
-			return nil, ErrCannotPlace
-		}
-		r.Applied, r.Partial = placed, true
-		if !Sliceable(steps) {
-			return nil, fmt.Errorf(
-				"this migration stopped after statement %d, but its revert cannot be "+
-					"cut down to match — some revert statements could not be matched to "+
-					"the forward statement they undo, so only a rollback from the "+
-					"target can be offered", placed)
-		}
+	case live != to:
+		return nil, ErrCannotPlace
 	}
 
-	r.Steps = SliceRevert(steps, r.Applied)
-	if len(r.Steps) == 0 {
-		return nil, ErrNothingToRollBack
+	if r.Steps, err = s.RevertSteps(ctx, migrationID); err != nil {
+		return nil, err
 	}
-	for _, st := range r.Steps {
-		if st.StructureOnly {
-			r.LosesData = true
-		}
+	if len(r.Steps) == 0 {
+		return nil, ErrNoRevert
 	}
 	return r, nil
 }
@@ -149,20 +115,13 @@ func (s *Scope) EnqueueRollback(ctx context.Context, actorID, migrationID int64)
 		return fmt.Errorf("enqueue rollback: %w", err)
 	}
 
-	what := fmt.Sprintf("undoing all %d statement(s)", plan.Applied)
-	if plan.Partial {
-		what = fmt.Sprintf("undoing the %d statement(s) that applied, of %d",
-			plan.Applied, plan.Total)
-	}
-	s.record(ctx, Warn("rollback.queued", what+", returning the database to "+
-		plan.To.Short()).
+	s.record(ctx, Warn("rollback.queued", fmt.Sprintf(
+		"running the %d written revert statement(s), returning the database to %s",
+		len(plan.Steps), plan.To.Short())).
 		By(actorID).
 		OnRequest(plan.RequestID).
 		OnMigration(migrationID).
-		With(map[string]any{
-			"applied": plan.Applied, "total": plan.Total,
-			"partial": plan.Partial, "loses_data": plan.LosesData,
-		}))
+		With(map[string]any{"statements": len(plan.Steps)}))
 	return nil
 }
 
@@ -187,7 +146,7 @@ func (s *Store) LoadRollbackExecution(ctx context.Context, migrationID int64) (*
 	x.Steps = x.Steps[:0]
 	for _, st := range plan.Steps {
 		x.Steps = append(x.Steps, Step{
-			Ordinal: st.Ordinal, SQL: st.SQL, ChangeID: st.ChangeID,
+			Ordinal: st.Ordinal, SQL: st.SQL, ChangeID: "revert",
 			Transactional: st.Transactional, Note: st.Note,
 		})
 	}
