@@ -146,7 +146,7 @@ func (s *Scope) GenerateMigration(ctx context.Context, actorID, requestID int64)
 	// demand because it is evidence about this fingerprint pair: regenerating
 	// the migration must produce a new revert, and one computed later could be
 	// computed against schemas that have since moved.
-	revertSteps, _ := buildRevert(result, from, to)
+	revertSteps, _ := buildRevert(result, statements, from, to)
 
 	forwardSteps := make([]Step, 0, len(statements))
 	for i, st := range statements {
@@ -188,10 +188,10 @@ func (s *Scope) GenerateMigration(ctx context.Context, actorID, requestID int64)
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO schemaver.migration_revert_step
 			    (migration_id, ordinal, sql, change_id, transactional, note,
-			     structure_only)
-			VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), $7)`,
+			     structure_only, undoes_ordinal)
+			VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), $7, NULLIF($8, 0))`,
 			migrationID, st.Ordinal, st.SQL, st.ChangeID, st.Transactional,
-			st.Note, st.StructureOnly); err != nil {
+			st.Note, st.StructureOnly, st.Undoes); err != nil {
 			return 0, fmt.Errorf("store revert step %d: %w", st.Ordinal, err)
 		}
 	}

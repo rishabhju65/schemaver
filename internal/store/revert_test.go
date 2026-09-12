@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/rishabhju65/schemaver/internal/diff"
+	"github.com/rishabhju65/schemaver/internal/render"
 	"github.com/rishabhju65/schemaver/internal/schema"
 )
 
@@ -36,7 +37,7 @@ func TestRevertMarksWhatItCannotRestore(t *testing.T) {
 		col("id", "bigint"), col("channel", "text")))
 
 	forward := diff.Compute(from, to)
-	steps, _ := buildRevert(forward, from, to)
+	steps, _ := buildRevert(forward, render.Statements(forward.Changes, from, to), from, to)
 	if len(steps) == 0 {
 		t.Fatal("no revert was generated for a reversible-looking change")
 	}
@@ -77,13 +78,70 @@ func TestRevertOfAnAdditiveChangeLosesNothing(t *testing.T) {
 	to := withTables(table("orders", col("id", "bigint"), col("channel", "text")))
 
 	forward := diff.Compute(from, to)
-	steps, _ := buildRevert(forward, from, to)
+	steps, _ := buildRevert(forward, render.Statements(forward.Changes, from, to), from, to)
 	if len(steps) == 0 {
 		t.Fatal("no revert generated")
 	}
 	for _, st := range steps {
 		if st.StructureOnly {
 			t.Errorf("undoing a purely additive migration was marked lossy: %s", st.SQL)
+		}
+	}
+}
+
+// TestSliceRevertTakesOnlyWhatApplied covers the rollback that matters: the one
+// offered after a migration stops partway.
+//
+// The generated revert assumes the target was reached. A run that applied two
+// of three statements needs the revert of those two and must not touch the
+// third, whose forward statement never ran — dropping an index that was never
+// created fails, and failing during a rollback is the worst place to fail.
+func TestSliceRevertTakesOnlyWhatApplied(t *testing.T) {
+	from := withTables(table("orders",
+		col("id", "bigint"), col("legacy_status", "text")))
+	to := withTables(table("orders",
+		col("id", "bigint"), col("channel", "text")))
+
+	forward := diff.Compute(from, to)
+	forwardStatements := render.Statements(forward.Changes, from, to)
+	steps, _ := buildRevert(forward, forwardStatements, from, to)
+
+	if !Sliceable(steps) {
+		t.Fatalf("the revert cannot be sliced; every step needs a forward statement:\n%+v", steps)
+	}
+
+	full := SliceRevert(steps, len(forwardStatements))
+	if len(full) != len(steps) {
+		t.Errorf("slicing the whole migration returned %d of %d steps", len(full), len(steps))
+	}
+
+	// Nothing applied: nothing to undo.
+	if got := SliceRevert(steps, 0); len(got) != 0 {
+		t.Errorf("a run that applied nothing produced %d revert statement(s)", len(got))
+	}
+
+	// Only the first forward statement applied.
+	partial := SliceRevert(steps, 1)
+	if len(partial) == 0 {
+		t.Fatal("a run that applied one statement produced no rollback at all")
+	}
+	if len(partial) >= len(steps) {
+		t.Errorf("a partial rollback took %d of %d statements; it should take fewer",
+			len(partial), len(steps))
+	}
+	for _, st := range partial {
+		if st.Undoes > 1 {
+			t.Errorf("the partial rollback includes a statement undoing forward "+
+				"statement %d, which never ran: %s", st.Undoes, st.SQL)
+		}
+		t.Logf("undoes forward %d: %s", st.Undoes, st.SQL)
+	}
+
+	// Order within a slice follows the revert, not the forward migration.
+	for i := 1; i < len(full); i++ {
+		if full[i].Ordinal <= full[i-1].Ordinal {
+			t.Errorf("slicing reordered the revert: %d came after %d",
+				full[i].Ordinal, full[i-1].Ordinal)
 		}
 	}
 }
