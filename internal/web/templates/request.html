@@ -148,6 +148,66 @@ now, while the choice is still open — not when it is needed.</p>
   </div>
 </div>
 
+{{if $r.RollbackRefusal}}
+<h2 style="margin-top:26px">Rolling back</h2>
+<p class="banner err">
+  <b>No rollback can be offered.</b> {{$r.RollbackRefusal}}
+</p>
+{{end}}
+
+{{with $r.Rollback}}
+<h2 style="margin-top:26px">Rolling back</h2>
+{{if .Partial}}
+<p class="sub">This migration stopped after statement {{.Applied}} of {{.Total}}.
+Undoing it means running the revert of those {{.Applied}} statements and no
+others — the rest never took effect, and undoing something that did not happen
+is how a rollback fails.</p>
+{{else}}
+<p class="sub">All {{.Applied}} statement(s) applied. Undoing runs the whole
+revert, exactly as it was reviewed.</p>
+{{end}}
+
+<div class="card pad">
+  <div class="gates">
+    <span class="fp">{{short .From}} → {{short .To}}</span>
+    <span class="fp">{{len .Steps}} statement(s)</span>
+    {{if .Partial}}<span class="modified">partial</span>
+    {{else}}<span class="added">complete</span>{{end}}
+  </div>
+
+  {{if .LosesData}}
+  <p class="banner err" style="margin:14px 0 0">
+    <b>This rollback does not restore everything.</b>
+    It puts the schema back and cannot put back the contents of what the
+    migration discarded. Rolling back leaves the shape it started with and the
+    data gone.
+  </p>
+  {{end}}
+
+  <div style="margin-top:14px">
+    {{range .Steps}}
+    <div class="change">
+      <span class="cls {{if .StructureOnly}}destructive{{else if .Transactional}}metadata_only{{else}}lock_heavy{{end}}">
+        {{if .StructureOnly}}shape{{else}}{{.Ordinal}}{{end}}</span>
+      <div><code>{{.SQL}}</code></div>
+    </div>
+    {{end}}
+  </div>
+
+  {{if $.CanWrite}}
+  <form method="post" action="/requests/{{$r.ID}}/act" style="margin-top:16px">
+    <input type="hidden" name="csrf" value="{{$.CSRF}}">
+    <input type="hidden" name="do" value="rollback">
+    <button type="submit" style="width:auto">Roll back {{$r.Database}}</button>
+    <span class="hint">Queued and applied under an exclusive lock, like the
+    migration itself. The starting schema is checked again at that moment: if
+    the database has moved since this page was drawn, the rollback is refused
+    rather than applied to a state it was not composed for.</span>
+  </form>
+  {{end}}
+</div>
+{{end}}
+
 {{with $r.Revert}}
 {{/* Read at approval time, per D-012: the point of generating a revert is that
      the cost of undoing is known while the choice is still open. Nothing runs

@@ -166,6 +166,21 @@ func (s *Server) act(w http.ResponseWriter, r *http.Request) {
 		// migration regenerated between someone seeing the button and pressing
 		// it.
 		actErr = scope.EnqueueExecution(r.Context(), user.ID, id)
+	case "rollback":
+		// Planned again inside EnqueueRollback rather than trusted from the
+		// page: a database can move between somebody seeing the button and
+		// pressing it, and a rollback composed for one state must not be run
+		// against another.
+		detail, derr := scope.Request(r.Context(), id)
+		if derr != nil {
+			actErr = derr
+			break
+		}
+		if detail.MigrationID == 0 {
+			actErr = errors.New("this request has no migration to undo")
+			break
+		}
+		actErr = scope.EnqueueRollback(r.Context(), user.ID, detail.MigrationID)
 	default:
 		actErr = errors.New("unknown action")
 	}

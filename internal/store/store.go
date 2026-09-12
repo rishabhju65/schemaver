@@ -387,6 +387,7 @@ const (
 	KindDiscover = "discover"
 	KindExecute  = "execute"
 	KindProve    = "prove"
+	KindRollback = "rollback"
 )
 
 // ObservationKinds is the cheap, short work.
@@ -395,7 +396,7 @@ var ObservationKinds = []string{KindObserve, KindDiscover, KindProve}
 // ExecutionKinds is the long work. Claimed by a separate pool: a migration can
 // hold a worker for an hour, and eight of them sharing one pool with observation
 // would stop drift detection for that hour.
-var ExecutionKinds = []string{KindExecute}
+var ExecutionKinds = []string{KindExecute, KindRollback}
 
 func (s *Store) ClaimJob(ctx context.Context, workerID string, lease time.Duration, budget Budget, kinds []string) (*Job, error) {
 	if budget.Floor < 1 {
@@ -576,4 +577,31 @@ func (s *Store) RenewLease(ctx context.Context, jobID int64, workerID string, le
 		return false, fmt.Errorf("renew lease: %w", err)
 	}
 	return tag.RowsAffected() == 1, nil
+}
+
+// ObserveNow queues an immediate read of one database.
+//
+// Called after a migration or a rollback, because the recorded fingerprint is
+// otherwise stale until the next scheduled cycle — and several things read it
+// as though it were current. The claim query refuses to start a migration whose
+// starting point does not match it, so a second change queued behind the first
+// would sit unclaimable for a whole interval; a rollback is planned from it;
+// and the fleet shows the schema the database had before the change that just
+// succeeded.
+//
+// Queued rather than written directly, even though the executor has just
+// verified the exact fingerprint. Recording it here would set the fingerprint
+// without a snapshot behind it and without evaluating drift, leaving the row
+// consistent with itself and with nothing else.
+func (s *Store) ObserveNow(ctx context.Context, databaseID int64) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO schemaver.job
+		    (kind, target_kind, target_id, instance_id, weight, run_after)
+		SELECT 'observe', 'database', d.id, d.instance_id, 1, now()
+		  FROM schemaver.database d
+		 WHERE d.id = $1 AND d.managed AND d.retired_at IS NULL`, databaseID)
+	if err != nil {
+		return fmt.Errorf("queue an immediate observation: %w", err)
+	}
+	return nil
 }

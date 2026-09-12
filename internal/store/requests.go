@@ -108,8 +108,16 @@ type RequestDetail struct {
 
 	// Revert is the generated way back, read at approval time so the cost of
 	// undoing is known before the change runs rather than during the incident
-	// (D-012). Nothing executes it.
+	// (D-012).
 	Revert []RevertStep
+
+	// Rollback is what undoing would run from where the database actually is,
+	// or nil when there is nothing to undo or nowhere to undo from. Computed
+	// rather than stored, because the answer depends on the live schema.
+	Rollback *Rollback
+	// RollbackRefusal explains why no rollback is offered, when the reason is
+	// worth saying rather than simply hiding the button.
+	RollbackRefusal string
 }
 
 // RevertLosesData reports that undoing would not restore everything, so the
@@ -243,6 +251,21 @@ func (s *Scope) Request(ctx context.Context, id int64) (*RequestDetail, error) {
 	if d.MigrationID != 0 {
 		if d.Revert, err = s.RevertSteps(ctx, d.MigrationID); err != nil {
 			return nil, err
+		}
+		// Only once something has run. Before that there is nothing to undo,
+		// and offering the option would suggest otherwise.
+		if len(d.Executions) > 0 {
+			switch plan, perr := s.PlanRollback(ctx, d.MigrationID); {
+			case perr == nil:
+				d.Rollback = plan
+			case errors.Is(perr, ErrNothingToRollBack):
+				// Silent: the database is where it started, which is the good
+				// outcome of a failed run rather than a problem to explain.
+			case errors.Is(perr, ErrCannotPlace):
+				d.RollbackRefusal = perr.Error()
+			default:
+				d.RollbackRefusal = perr.Error()
+			}
 		}
 	}
 	for _, t := range d.Threads {

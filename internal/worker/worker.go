@@ -204,7 +204,7 @@ func (w *Worker) drainOnce(ctx context.Context, id string, kinds []string) bool 
 	// A migration may run far longer than an observation, and must not be cut
 	// short by the observation timeout.
 	timeout := w.cfg.Timeout
-	if job.Kind == store.KindExecute {
+	if job.Kind == store.KindExecute || job.Kind == store.KindRollback {
 		timeout = w.cfg.ExecutionTimeout
 	}
 	jobCtx, cancel := context.WithTimeout(ctx, timeout)
@@ -276,6 +276,8 @@ func (w *Worker) handle(ctx context.Context, job *store.Job) error {
 		return w.execute(ctx, job.TargetID)
 	case store.KindProve:
 		return w.prove(ctx, job.TargetID)
+	case store.KindRollback:
+		return w.rollback(ctx, job.TargetID)
 	default:
 		return fmt.Errorf("unknown job kind %q", job.Kind)
 	}
@@ -315,6 +317,12 @@ func (w *Worker) execute(ctx context.Context, migrationID int64) error {
 	if serr := w.store.SetRequestState(context.WithoutCancel(ctx), x.RequestID,
 		outcome.State, outcome.Reason); serr != nil {
 		w.log.Error("recording the outcome failed", "migration", migrationID, "error", serr)
+	}
+
+	// The schema has moved; read it back so everything that consults the
+	// recorded fingerprint is consulting this one and not the previous.
+	if oerr := w.store.ObserveNow(context.WithoutCancel(ctx), x.DatabaseID); oerr != nil {
+		w.log.Warn("could not queue a read after the change", "error", oerr)
 	}
 
 	switch outcome.State {
