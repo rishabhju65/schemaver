@@ -41,6 +41,14 @@ func (s *Scope) Propose(ctx context.Context, authorID, databaseID, sourceID int6
 	if reachable != 2 {
 		return 0, errors.New("no such database")
 	}
+	// Reachable is not the same as writable. Both ends must still be databases
+	// schemaver is watching: the target because the change is aimed at it, and
+	// the source because its schema is what the target will be made to match,
+	// and matching a schema nobody has read since it was stood down is a
+	// promise about a state we cannot vouch for.
+	if err := s.requireWritable(ctx, databaseID, sourceID); err != nil {
+		return 0, err
+	}
 
 	var id int64
 	if err := s.store.pool.QueryRow(ctx, `

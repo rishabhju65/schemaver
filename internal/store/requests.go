@@ -239,11 +239,12 @@ func (s *Scope) Candidates(ctx context.Context) ([]DatabaseRow, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Only databases with an observed schema can be diffed; offering the others
-	// would produce a request that cannot generate anything.
+	// Only databases with an observed schema can be diffed, and only ones still
+	// being watched can be changed. Offering either of the others would produce
+	// a request that is refused at the next step.
 	var out []DatabaseRow
 	for _, d := range all {
-		if d.Fingerprint != "" {
+		if d.Fingerprint != "" && d.Writable {
 			out = append(out, d)
 		}
 	}

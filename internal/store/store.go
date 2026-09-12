@@ -433,6 +433,7 @@ func (s *Store) ClaimJob(ctx context.Context, workerID string, lease time.Durati
 		                JOIN schemaver.database d ON d.id = r.database_id
 		               WHERE m.id = j.target_id
 		                 AND m.superseded_at IS NULL
+		                 AND d.retired_at IS NULL
 		                 AND d.current_fingerprint = m.from_fingerprint))
 		        AND (j.instance_id IS NULL OR (
 		              SELECT COALESCE(sum(r.weight), 0) FROM schemaver.job r

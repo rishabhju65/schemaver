@@ -125,11 +125,19 @@ func (s *Scope) Blob(ctx context.Context, fingerprint schema.Version) (*schema.S
 
 // DatabaseRow is one row of the fleet view.
 type DatabaseRow struct {
-	ID            int64
-	Name          string
-	Instance      string
-	Environment   string
-	Managed       bool
+	ID          int64
+	Name        string
+	Instance    string
+	Environment string
+	Managed     bool
+	// Retired is when somebody stood this database down, or nil while it is
+	// still live. RetiredReason is why, in their words.
+	Retired       *time.Time
+	RetiredReason string
+	// Writable reports that changes can still be aimed here. Kept as a field
+	// rather than derived in the template, so the one definition of writable
+	// lives in SQL beside the others.
+	Writable      bool
 	Fingerprint   schema.Version
 	LastCheckedAt *time.Time
 	LastReadAt    *time.Time
@@ -146,6 +154,8 @@ type DatabaseRow struct {
 func (s *Scope) Fleet(ctx context.Context) ([]DatabaseRow, error) {
 	rows, err := s.store.pool.Query(ctx, `
 		SELECT d.id, d.name, i.name, COALESCE(e.name, ''), d.managed,
+		       d.retired_at, COALESCE(d.retired_reason, ''),
+		       `+writableDatabase+`,
 		       COALESCE(d.current_fingerprint, ''),
 		       d.last_checked_at, d.last_read_at, COALESCE(d.last_error, ''),
 		       (SELECT count(*) FROM schemaver.drift f
@@ -167,6 +177,7 @@ func (s *Scope) Fleet(ctx context.Context) ([]DatabaseRow, error) {
 		var r DatabaseRow
 		var fingerprint string
 		if err := rows.Scan(&r.ID, &r.Name, &r.Instance, &r.Environment, &r.Managed,
+			&r.Retired, &r.RetiredReason, &r.Writable,
 			&fingerprint, &r.LastCheckedAt, &r.LastReadAt, &r.LastError,
 			&r.OpenDrifts, &r.Changes); err != nil {
 			return nil, fmt.Errorf("scan fleet row: %w", err)

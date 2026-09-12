@@ -21,6 +21,12 @@ func (s *Scope) EnqueueExecution(ctx context.Context, actorID, requestID int64) 
 	if err := s.requireWrite(); err != nil {
 		return err
 	}
+	// Re-checked here rather than trusted from when the page was rendered: a
+	// database can be retired between somebody seeing the execute button and
+	// pressing it, which is the same reason the approval gate is re-evaluated.
+	if err := s.requireWritableForRequest(ctx, requestID); err != nil {
+		return err
+	}
 	state, err := s.ApprovalState(ctx, requestID)
 	if err != nil {
 		return err
