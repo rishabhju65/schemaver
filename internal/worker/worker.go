@@ -16,6 +16,7 @@ import (
 	"github.com/rishabhju65/schemaver/internal/executor"
 	"github.com/rishabhju65/schemaver/internal/introspect"
 	"github.com/rishabhju65/schemaver/internal/schema"
+	"github.com/rishabhju65/schemaver/internal/shadow"
 	"github.com/rishabhju65/schemaver/internal/store"
 )
 
@@ -40,6 +41,12 @@ type Config struct {
 	ExecutionTimeout time.Duration
 	// Concurrency is how many observation jobs this worker runs at once.
 	Concurrency int
+	// Shadow creates throwaway databases to prove migrations against. Nil
+	// disables proving, which is reported on each migration rather than passed
+	// over: a check that quietly does not run is worse than no check, because
+	// everything downstream still speaks as though it did.
+	Shadow *shadow.Pool
+
 	// ExecutionConcurrency is a separate pool for migrations. Separate because a
 	// migration can hold a worker for an hour: sharing one pool would let a
 	// handful of long migrations stop drift detection entirely for that hour.
@@ -267,6 +274,8 @@ func (w *Worker) handle(ctx context.Context, job *store.Job) error {
 		return w.observe(ctx, job.TargetID)
 	case store.KindExecute:
 		return w.execute(ctx, job.TargetID)
+	case store.KindProve:
+		return w.prove(ctx, job.TargetID)
 	default:
 		return fmt.Errorf("unknown job kind %q", job.Kind)
 	}

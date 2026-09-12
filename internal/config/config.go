@@ -55,6 +55,19 @@ type Config struct {
 	// PrivateTargetsOverridden records that private addresses were permitted
 	// deliberately despite open sign-up, so the caller can say so loudly.
 	PrivateTargetsOverridden bool
+
+	// ShadowURL addresses a server where throwaway databases can be created to
+	// prove a migration before it runs. The role needs CREATEDB.
+	//
+	// Defaults to the metadata database's own server, so the proof runs without
+	// anyone configuring anything — a check nobody switched on is a check
+	// nobody has. Point it elsewhere to keep the churn of created and dropped
+	// databases off the server holding schemaver's own records.
+	ShadowURL string
+	// ShadowDefaulted records that nothing named a shadow server and the
+	// metadata server was assumed, so the caller can say so rather than implying
+	// it was chosen.
+	ShadowDefaulted bool
 }
 
 // Environment variable names, gathered so the set is visible at a glance.
@@ -64,6 +77,7 @@ const (
 	EnvPort         = "PORT"
 	EnvOpenSignup   = "SCHEMAVER_OPEN_SIGNUP"
 	EnvAllowPrivate = "SCHEMAVER_ALLOW_PRIVATE_TARGETS"
+	EnvShadowURL    = "SCHEMAVER_SHADOW_URL"
 )
 
 // Load reads a deployment's settings.
@@ -90,6 +104,10 @@ func Load(databaseURL string, components Components) (*Config, error) {
 		return nil, err
 	}
 	cfg.Secrets = box
+
+	if cfg.ShadowURL = os.Getenv(EnvShadowURL); cfg.ShadowURL == "" {
+		cfg.ShadowURL, cfg.ShadowDefaulted = cfg.DatabaseURL, true
+	}
 
 	cfg.Targets, cfg.PrivateTargetsOverridden = targetPolicy(cfg.OpenSignup)
 	return cfg, nil

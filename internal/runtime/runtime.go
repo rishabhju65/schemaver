@@ -23,6 +23,7 @@ import (
 	"github.com/rishabhju65/schemaver/internal/auth"
 	"github.com/rishabhju65/schemaver/internal/config"
 	"github.com/rishabhju65/schemaver/internal/migrate"
+	"github.com/rishabhju65/schemaver/internal/shadow"
 	"github.com/rishabhju65/schemaver/internal/store"
 	"github.com/rishabhju65/schemaver/internal/web"
 	"github.com/rishabhju65/schemaver/internal/worker"
@@ -88,7 +89,21 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*System, 
 		}
 	}
 	if cfg.Components.Work {
-		sys.Worker = worker.New(sys.Store, worker.Config{}, log)
+		wcfg := worker.Config{}
+		// A shadow the worker cannot reach is reported per migration rather
+		// than fatal at startup: observation and execution do not depend on it,
+		// and refusing to start would take the whole product down over a check.
+		if pool, perr := shadow.NewPool(cfg.ShadowURL); perr != nil {
+			log.Warn("migrations will not be proven: the shadow server address "+
+				"could not be parsed", "error", perr)
+		} else {
+			wcfg.Shadow = pool
+			if cfg.ShadowDefaulted {
+				log.Info("proving migrations on the metadata database's own server; " +
+					"set " + config.EnvShadowURL + " to use another")
+			}
+		}
+		sys.Worker = worker.New(sys.Store, wcfg, log)
 	}
 	return sys, nil
 }
