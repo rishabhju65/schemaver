@@ -261,9 +261,22 @@ func (p *Pool) Sweep(ctx context.Context, age time.Duration) (int, error) {
 
 	dropped := 0
 	for _, name := range stale {
-		if _, err := admin.Exec(ctx, `DROP DATABASE IF EXISTS "`+name+`" WITH (FORCE)`); err != nil {
-			// One undroppable database must not stop the sweep; it is likely in
-			// use by a run that is still going.
+		// Deliberately without FORCE, unlike Close. Close drops a database this
+		// process created and still owns, where a lingering connection is its
+		// own to cut. Sweep drops databases it merely recognises by name, and
+		// on a shared server those belong to other people: another deployment,
+		// a test run, a proof the worker is in the middle of.
+		//
+		// Refusing to drop an in-use database is the whole safety property
+		// here. An abandoned one has no connections — the process that held
+		// them is gone, which is why it was abandoned — so it drops cleanly,
+		// and crash recovery still works. A live one refuses and is skipped.
+		//
+		// With FORCE this swept the server rather than its own leavings: age
+		// zero terminated every open shadow connection on the host, which is
+		// exactly what it did to the diff and render suites whenever they
+		// happened to overlap with it.
+		if _, err := admin.Exec(ctx, `DROP DATABASE IF EXISTS "`+name+`"`); err != nil {
 			continue
 		}
 		dropped++

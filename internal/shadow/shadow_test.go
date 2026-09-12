@@ -2,6 +2,7 @@ package shadow
 
 import (
 	"context"
+	"github.com/jackc/pgx/v5"
 	"os"
 	"strings"
 	"testing"
@@ -217,4 +218,58 @@ func withOpenCheck(ctx context.Context, db *DB) (*schema.Schema, schema.Version,
 	}
 	v, err := schema.Fingerprint(s)
 	return s, v, err
+}
+
+// TestSweepLeavesLiveDatabasesAlone is the property that keeps a sweep from
+// taking down everything else using the same server.
+//
+// Sweep identifies databases by name prefix, so on a shared host it sees every
+// deployment's shadows and every concurrent test run's. It used to drop them
+// WITH FORCE, which made "in use" no obstacle: a sweep with age zero terminated
+// every open shadow connection on the host. Packages run in parallel under
+// `go test ./...`, so this reliably and intermittently killed the diff and
+// render suites, and would now also kill a proof the worker was in the middle
+// of.
+func TestSweepLeavesLiveDatabasesAlone(t *testing.T) {
+	p, ctx := testPool(t)
+
+	live, err := p.Create(ctx)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	t.Cleanup(func() { _ = live.Close() })
+
+	// Hold a connection open, the way any run in progress would.
+	conn, err := pgx.Connect(ctx, live.dsn)
+	if err != nil {
+		t.Fatalf("connect to the live shadow: %v", err)
+	}
+	defer conn.Close(context.Background())
+	if err := conn.QueryRow(ctx, `SELECT 1`).Scan(new(int)); err != nil {
+		t.Fatalf("the connection is not usable: %v", err)
+	}
+
+	// A sweep that considers everything stale must still not touch this one.
+	if _, err := p.Sweep(ctx, 0); err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+
+	// The connection still works, and the database is still there.
+	if err := conn.QueryRow(ctx, `SELECT 1`).Scan(new(int)); err != nil {
+		t.Fatalf("a sweep killed a connection to a database in use: %v", err)
+	}
+	var exists bool
+	admin, err := pgx.Connect(ctx, p.adminDSN)
+	if err != nil {
+		t.Fatalf("connect as admin: %v", err)
+	}
+	defer admin.Close(context.Background())
+	if err := admin.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = $1)`,
+		live.Name).Scan(&exists); err != nil {
+		t.Fatalf("check the database still exists: %v", err)
+	}
+	if !exists {
+		t.Error("a sweep dropped a database that had an open connection")
+	}
 }
