@@ -93,20 +93,29 @@ func TestProposeReviewApprove(t *testing.T) {
 	// A freshly generated migration is shut on its proof before anybody has
 	// even looked at it: approving something that has not been shown to produce
 	// the schema it claims would be approving a guess.
+	// A freshly generated migration has no way back, because nothing generates
+	// one: whoever wrote the change writes the revert (D-022). The gate says so
+	// before it says anything about proofs, since this is the author's to fix
+	// and a proof cannot run on a plan that is not finished.
 	state, err := scope.ApprovalState(ctx, requestID)
 	if err != nil {
 		t.Fatalf("ApprovalState: %v", err)
 	}
 	if state.Executable {
-		t.Error("executable before the proof had run")
+		t.Error("executable with no way back written")
 	}
-	if state.ProofState != "pending" {
-		t.Errorf("a new migration starts at proof_state %q, want pending", state.ProofState)
+	if state.RevertWritten {
+		t.Error("a generated migration arrived with a revert; nothing should generate one")
 	}
-	t.Logf("gate closed on the proof: %s", state.Reason)
+	t.Logf("gate closed on the missing revert: %s", state.Reason)
+
+	if err := scope.WriteRevert(ctx, userID, migrationID,
+		"ALTER TABLE public.orders DROP COLUMN channel;"); err != nil {
+		t.Fatalf("WriteRevert: %v", err)
+	}
 
 	// Stand in for the worker, which is not running here. Both halves: the gate
-	// wants the migration proven and the way back shown to lead back.
+	// wants the migration rehearsed and the way back shown to lead back.
 	if err := st.RecordProof(ctx, migrationID, "passed", "", nil); err != nil {
 		t.Fatalf("RecordProof: %v", err)
 	}
@@ -166,9 +175,9 @@ func TestProposeReviewApprove(t *testing.T) {
 	if state.Executable {
 		t.Error("the approval survived regeneration; evidence must expire with the migration")
 	}
-	if state.ProofState != "pending" {
-		t.Errorf("the regenerated migration starts at proof_state %q, want pending — "+
-			"a proof of the previous statements says nothing about these", state.ProofState)
+	if state.RevertWritten {
+		t.Error("the regenerated migration kept the previous revert; a way back " +
+			"written for other statements is not a way back from these")
 	}
 	t.Logf("after regeneration the gate is shut again: %s", state.Reason)
 }

@@ -137,15 +137,16 @@ func (s *Store) RecordProof(ctx context.Context, migrationID int64, state, reaso
 		}
 	}
 
-	// A request waiting on its proof moves on. Passing opens it for review;
-	// failing sends it back to its author, because a migration that does not
-	// produce the declared schema is not something to ask people to read.
-	next, why := "IN_REVIEW", ""
+	// A request waiting on its rehearsal moves on. It has already been approved
+	// by the time it gets here (D-022), so passing means ready to run; failing
+	// sends it back to its author, because a migration that does not produce
+	// the schema it declares is not something to put in front of production.
+	next, why := "READY_TO_EXECUTE", ""
 	switch state {
 	case "failed":
 		next, why = "CHANGES_REQUESTED", reason
 	case "unproven":
-		why = reason
+		next, why = "READY_TO_EXECUTE", reason
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE schemaver.change_request r

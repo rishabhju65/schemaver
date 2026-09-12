@@ -64,6 +64,10 @@ func TestEditingWithdrawsApproval(t *testing.T) {
 	}
 
 	// Stand in for the prover and the reviewer, so the gate is open.
+	if err := scope.WriteRevert(ctx, userID, migrationID,
+		"ALTER TABLE public.orders DROP COLUMN channel;"); err != nil {
+		t.Fatalf("WriteRevert: %v", err)
+	}
 	if err := st.RecordProof(ctx, migrationID, "passed", "", nil); err != nil {
 		t.Fatalf("RecordProof: %v", err)
 	}
