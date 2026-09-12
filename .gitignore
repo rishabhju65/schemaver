@@ -2,5 +2,19 @@
 .env.local
 
 # Node artifacts from the Neon CLI. schemaver is a Go program; these exist only
-# so `neon config` can run, and node_modules must never be committed.
+# so `neon config` can run.
+#
+# The manifest and its lockfile are ignored too, which is the opposite of the
+# usual rule — a lockfile normally belongs in the repository. It does not here,
+# because this is not schemaver's manifest: nothing in the build or the program
+# reads it, the Dockerfile has no Node in it, and the dependencies it pins are
+# the CLI's rather than the product's. Committing it would tell a reader this is
+# a Node project, and tell tooling to install packages nothing needs.
 node_modules/
+package.json
+package-lock.json
+neon.ts
+
+# Lockfile for the Claude Code skills loaded while working in this directory.
+# Tooling state, regenerated on demand, and nothing to do with the product.
+skills-lock.json
