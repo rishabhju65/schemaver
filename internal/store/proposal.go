@@ -184,7 +184,7 @@ func (s *Scope) GenerateMigration(ctx context.Context, actorID, requestID int64)
 		// The merged schema has to be stored before it can be declared: the
 		// target fingerprint is a foreign key into the blobs, and this is a
 		// schema no database has been observed at.
-		if err := s.store.putBlob(ctx, merged.Target, merged.Result); err != nil {
+		if err := s.store.StoreSchema(ctx, merged.Result, merged.Target); err != nil {
 			return 0, err
 		}
 		target := string(merged.Target)

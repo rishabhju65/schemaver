@@ -138,26 +138,3 @@ func (s *Scope) PlanMerge(ctx context.Context, target, source int64) (*MergeView
 	view.Apply = diff.Compute(ourSchema, m.Schema).Changes
 	return view, nil
 }
-
-// putBlob stores a schema that no database has been observed at.
-//
-// Every other schema in the system arrives by being read off a real database,
-// and is stored on the way in. A merged schema is the exception: it is
-// computed, and it has to exist as a blob before a migration can declare it as
-// its target, because that column is a foreign key into the blobs.
-//
-// Content-addressed like the rest, so a merge computed twice is stored once.
-func (s *Store) putBlob(ctx context.Context, fingerprint schema.Version, sch *schema.Schema) error {
-	canonical, err := schema.Canonical(sch)
-	if err != nil {
-		return fmt.Errorf("render the merged schema: %w", err)
-	}
-	if _, err := s.pool.Exec(ctx, `
-		INSERT INTO schemaver.schema_blob (fingerprint, canonical, table_count, bytes)
-		VALUES ($1, $2, $3, $4)
-		ON CONFLICT (fingerprint) DO NOTHING`,
-		string(fingerprint), canonical, tableCount(sch), len(canonical)); err != nil {
-		return fmt.Errorf("store the merged schema: %w", err)
-	}
-	return nil
-}
