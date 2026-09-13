@@ -345,11 +345,15 @@ func TestReadNowForcesAFullRead(t *testing.T) {
 			"shortcut the reader is asking to bypass", *digest)
 	}
 
+	// Any state, not just pending. What ReadNow promises is that a read was
+	// put on the queue rather than left to the next cycle, and a worker running
+	// against the same deployment claims it within milliseconds — so requiring
+	// it to still be pending made this fail whenever the product was actually
+	// running, which is not a property worth asserting.
 	var queued int
 	if err := pool.QueryRow(ctx, `
 		SELECT count(*) FROM schemaver.job
-		 WHERE kind = 'observe' AND target_id = $1 AND state = 'pending'`,
-		target).Scan(&queued); err != nil {
+		 WHERE kind = 'observe' AND target_id = $1`, target).Scan(&queued); err != nil {
 		t.Fatalf("count queued reads: %v", err)
 	}
 	if queued == 0 {
