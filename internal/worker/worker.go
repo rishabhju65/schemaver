@@ -280,6 +280,8 @@ func (w *Worker) handle(ctx context.Context, job *store.Job) error {
 		return w.derive(ctx, job.TargetID)
 	case store.KindRollback:
 		return w.rollback(ctx, job.TargetID, job.DatabaseID)
+	case store.KindBranchWrite:
+		return w.branchWrite(ctx, job.TargetID)
 	default:
 		return fmt.Errorf("unknown job kind %q", job.Kind)
 	}

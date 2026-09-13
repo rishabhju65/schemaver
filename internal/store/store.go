@@ -408,10 +408,15 @@ const (
 	KindProve    = "prove"
 	KindDerive   = "derive"
 	KindRollback = "rollback"
+	// KindBranchWrite applies somebody's DDL to a throwaway copy of a branch's
+	// schema and records what came out. Grouped with observation rather than
+	// execution: it touches the shadow server and never a real database, and it
+	// is over in seconds.
+	KindBranchWrite = "branch_write"
 )
 
 // ObservationKinds is the cheap, short work.
-var ObservationKinds = []string{KindObserve, KindDiscover, KindProve, KindDerive}
+var ObservationKinds = []string{KindObserve, KindDiscover, KindProve, KindDerive, KindBranchWrite}
 
 // ExecutionKinds is the long work. Claimed by a separate pool: a migration can
 // hold a worker for an hour, and eight of them sharing one pool with observation
