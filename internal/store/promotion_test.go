@@ -158,3 +158,129 @@ func TestProductionWaitsForTheEnvironmentBelowIt(t *testing.T) {
 			again.Reason)
 	}
 }
+
+// TestChangingWhatADatabaseFollows covers the two edits the mapping allows
+// after onboarding, and what each should leave behind.
+//
+// The link is optional when a database is first managed and changeable
+// afterwards, which means a deployment will re-point and unpair databases as it
+// grows. Both leave records that described the old arrangement: an open
+// divergence says "this does not match that", and after the edit "that" is no
+// longer what this database is measured against.
+func TestChangingWhatADatabaseFollows(t *testing.T) {
+	url := os.Getenv("SCHEMAVER_METADATA_URL")
+	if url == "" {
+		t.Skip("set SCHEMAVER_METADATA_URL to run the mapping test")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	pool, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	st := store.New(pool, nil)
+
+	var projectID, instanceID, target, source int64
+	if err := pool.QueryRow(ctx, `
+		SELECT i.project_id, i.id, d.id,
+		       (SELECT id FROM schemaver.database WHERE name = 'shop_staging')
+		  FROM schemaver.database d
+		  JOIN schemaver.instance i ON i.id = d.instance_id
+		 WHERE d.name = 'shop_prod'`).
+		Scan(&projectID, &instanceID, &target, &source); err != nil {
+		t.Skipf("no fixtures: %v", err)
+	}
+	scope := st.ForProject(projectID)
+
+	var wasPeer *int64
+	var wasEnv *int64
+	pool.QueryRow(ctx, `
+		SELECT expected_peer_id, environment_id FROM schemaver.database WHERE id = $1`,
+		target).Scan(&wasPeer, &wasEnv)
+	t.Cleanup(func() {
+		pool.Exec(context.Background(), `
+			UPDATE schemaver.database SET expected_peer_id = $2, environment_id = $3
+			 WHERE id = $1`, target, wasPeer, wasEnv)
+	})
+
+	settings := func(peer *int64) []store.DatabaseSettings {
+		return []store.DatabaseSettings{{
+			ID: target, Managed: true, EnvironmentID: wasEnv, PeerID: peer,
+		}}
+	}
+
+	// Following something, and diverging from it.
+	if err := scope.ApplyDatabaseSettings(ctx, instanceID, settings(&source)); err != nil {
+		t.Fatalf("point at staging: %v", err)
+	}
+	var observed, expected string
+	if err := pool.QueryRow(ctx, `
+		SELECT min(fingerprint), max(fingerprint) FROM schemaver.schema_blob`).
+		Scan(&observed, &expected); err != nil || observed == expected {
+		t.Skipf("need two schemas to build a divergence: %v", err)
+	}
+	pool.Exec(ctx, `DELETE FROM schemaver.drift WHERE database_id = $1`, target)
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO schemaver.drift
+		       (database_id, observed_fingerprint, expected_fingerprint,
+		        expected_source, peer_database_id)
+		VALUES ($1, $2, $3, 'peer', $4)`,
+		target, observed, expected, source); err != nil {
+		t.Fatalf("create a divergence: %v", err)
+	}
+	t.Cleanup(func() {
+		pool.Exec(context.Background(),
+			`DELETE FROM schemaver.drift WHERE database_id = $1`, target)
+	})
+
+	// Unpairing withdraws the expectation, so the divergence stops being one.
+	if err := scope.ApplyDatabaseSettings(ctx, instanceID, settings(nil)); err != nil {
+		t.Fatalf("unpair: %v", err)
+	}
+	var open int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM schemaver.drift WHERE database_id = $1 AND status = 'open'`,
+		target).Scan(&open); err != nil {
+		t.Fatalf("count drift: %v", err)
+	}
+	if open != 0 {
+		t.Errorf("%d divergence(s) still open against a database this one no longer "+
+			"follows; a reader cannot tell that from a current one", open)
+	}
+
+	// Re-pointing asks for a fresh read rather than waiting out an interval,
+	// because until one happens the page compares against the old predecessor.
+	pool.Exec(ctx, `DELETE FROM schemaver.job WHERE kind = 'observe' AND target_id = $1`, target)
+	if err := scope.ApplyDatabaseSettings(ctx, instanceID, settings(&source)); err != nil {
+		t.Fatalf("re-point: %v", err)
+	}
+	var queued int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM schemaver.job
+		 WHERE kind = 'observe' AND target_id = $1 AND state = 'pending'`,
+		target).Scan(&queued); err != nil {
+		t.Fatalf("count queued reads: %v", err)
+	}
+	if queued == 0 {
+		t.Error("re-pointing queued no read, so the comparison stays stale until " +
+			"the next cycle comes round")
+	}
+
+	// Saving without changing the link asks for nothing.
+	pool.Exec(ctx, `DELETE FROM schemaver.job WHERE kind = 'observe' AND target_id = $1`, target)
+	if err := scope.ApplyDatabaseSettings(ctx, instanceID, settings(&source)); err != nil {
+		t.Fatalf("save unchanged: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM schemaver.job
+		 WHERE kind = 'observe' AND target_id = $1 AND state = 'pending'`,
+		target).Scan(&queued); err != nil {
+		t.Fatalf("count queued reads: %v", err)
+	}
+	if queued != 0 {
+		t.Errorf("saving the page unchanged queued %d read(s); every visit to the "+
+			"settings page would cost one", queued)
+	}
+}

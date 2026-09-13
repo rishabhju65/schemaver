@@ -173,7 +173,28 @@ func (s *Scope) ApplyDatabaseSettings(ctx context.Context, instanceID int64, set
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	// Which databases had their predecessor changed. Both checks that follow the
+	// loop need it, and it is only knowable before the update runs.
+	var repointed []int64
+	var unpaired []int64
 	for _, set := range settings {
+		var was *int64
+		if err := tx.QueryRow(ctx,
+			`SELECT expected_peer_id FROM schemaver.database WHERE id = $1`,
+			set.ID).Scan(&was); err != nil {
+			return fmt.Errorf("read the current predecessor of %d: %w", set.ID, err)
+		}
+		switch {
+		case was == nil && set.PeerID == nil:
+			// Unchanged and unset.
+		case was != nil && set.PeerID != nil && *was == *set.PeerID:
+			// Unchanged.
+		case set.PeerID == nil:
+			unpaired = append(unpaired, set.ID)
+		default:
+			repointed = append(repointed, set.ID)
+		}
+
 		// A database compared against itself would report drift against its own
 		// schema forever; the database rejects it, but catching it here gives a
 		// better message than a constraint violation.
@@ -206,6 +227,39 @@ func (s *Scope) ApplyDatabaseSettings(ctx context.Context, instanceID int64, set
 			set.ID, set.Managed, set.EnvironmentID, set.PeerID, instanceID,
 			s.projects); err != nil {
 			return fmt.Errorf("save settings for database %d: %w", set.ID, err)
+		}
+	}
+
+	// A database that now follows nothing cannot be drifting from anything. The
+	// schemas still differ, but "drift" is divergence from an expectation, and
+	// the expectation has just been withdrawn — leaving the row open would have
+	// the page report a comparison against a database this one no longer
+	// follows, which a reader cannot tell from a current one.
+	//
+	// It matters more than it reads: unpairing is also how a change is taken out
+	// from behind the promotion gate (D-024), so it is a deliberate act whose
+	// effects should be visible immediately rather than in five minutes.
+	if len(unpaired) > 0 {
+		if _, err := tx.Exec(ctx, `
+			UPDATE schemaver.drift
+			   SET status = 'resolved', resolved_at = now()
+			 WHERE database_id = ANY($1) AND status = 'open'`, unpaired); err != nil {
+			return fmt.Errorf("close drift for databases that now follow nothing: %w", err)
+		}
+	}
+
+	// One that follows something new is compared against it on the next
+	// observation, which is up to an interval away — so the page would show a
+	// divergence from the old predecessor until then. Asking for a read now
+	// costs one job and makes the change take effect when it is made.
+	for _, id := range repointed {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO schemaver.job
+			    (kind, target_kind, target_id, instance_id, weight, run_after)
+			SELECT 'observe', 'database', d.id, d.instance_id, 1, now()
+			  FROM schemaver.database d
+			 WHERE d.id = $1 AND d.managed AND d.retired_at IS NULL`, id); err != nil {
+			return fmt.Errorf("queue a read after repointing %d: %w", id, err)
 		}
 	}
 	return tx.Commit(ctx)
