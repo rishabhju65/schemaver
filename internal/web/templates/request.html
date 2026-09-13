@@ -153,10 +153,46 @@ anything said on this page are kept.</p>
 now, while the choice is still open — not when it is needed.</p>
 {{end}}
 
-{{range $r.Renames}}
+{{range .OpenRenames}}
+{{/* The one question the engine refuses to answer for itself. A rename and a
+     drop-plus-add are indistinguishable from two schemas and are not remotely
+     equivalent — one keeps the data, the other destroys it — so it is put to a
+     person, and the gate holds until somebody has said. Both answers settle it:
+     "dropped and replaced" confirms that the drop already in the plan is what
+     was meant, which is the more dangerous of the two. */}}
 <div class="banner warn">
   <b>Unanswered question.</b> {{.Question}}<br>
   <span class="fp">confidence: {{.Confidence}} · {{.From}} → {{.To}} ({{.Type}})</span>
+  {{if and $.CanWrite $.Open}}
+  <form method="post" action="/requests/{{$r.ID}}/act" class="inline-form">
+    <input type="hidden" name="csrf" value="{{$.CSRF}}">
+    <input type="hidden" name="do" value="rename">
+    <input type="hidden" name="namespace" value="{{.Namespace}}">
+    <input type="hidden" name="table" value="{{.Table}}">
+    <input type="hidden" name="from" value="{{.From}}">
+    <input type="hidden" name="to" value="{{.To}}">
+    <input name="note" placeholder="how you know (optional)">
+    <button type="submit" name="verdict" value="renamed">Renamed — keep the data</button>
+    <button type="submit" name="verdict" value="dropped" class="secondary">Dropped and replaced</button>
+  </form>
+  <span class="hint">Either answer rebuilds the plan, so anything already
+  approved is approved again against the statements this settles on.</span>
+  {{end}}
+</div>
+{{end}}
+
+{{if .RenameAnswers}}
+<div class="card" style="margin-top:14px">
+  {{range .RenameAnswers}}
+  <div class="change">
+    <span class="cls {{if .Renamed}}metadata_only{{else}}destructive{{end}}">
+      {{if .Renamed}}renamed{{else}}dropped{{end}}</span>
+    <div>{{.Namespace}}.{{.Table}}.{{.From}} → {{.To}}
+      {{if .Renamed}}is the same column under a new name, and keeps its data{{else}}is
+      two different columns; {{.From}}'s data is discarded{{end}}<br>
+      <span class="fp">answered by {{.By}}{{if .Note}} · {{.Note}}{{end}}</span></div>
+  </div>
+  {{end}}
 </div>
 {{end}}
 

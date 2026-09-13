@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/rishabhju65/schemaver/internal/auth"
+	"github.com/rishabhju65/schemaver/internal/diff"
 	"github.com/rishabhju65/schemaver/internal/store"
 )
 
@@ -121,9 +122,31 @@ func (s *Server) request(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// Rename questions, split into the ones still open and the ones somebody has
+	// settled. Split here rather than in the template because deciding which is
+	// which is a lookup, and a template that does it reads as though the two
+	// were different kinds of thing.
+	answers, err := scope.RenameAnswers(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	settled := map[string]bool{}
+	for _, a := range answers {
+		settled[a.Namespace+"."+a.Table+"."+a.From+">"+a.To] = true
+	}
+	var open []diff.RenameCandidate
+	for _, c := range detail.Renames {
+		if !settled[c.Namespace+"."+c.Table+"."+c.From+">"+c.To] {
+			open = append(open, c)
+		}
+	}
+
 	user := userFrom(r.Context())
 	s.render(w, r, "request", detail.Title, "requests", map[string]any{
-		"R": detail,
+		"R":             detail,
+		"OpenRenames":   open,
+		"RenameAnswers": answers,
 		// Only while something is actually in flight.
 		"Refresh": detail.Execution() != nil && detail.Execution().Running(),
 		// The author cannot approve their own request unless they are the only
@@ -196,6 +219,16 @@ func (s *Server) act(w http.ResponseWriter, r *http.Request) {
 			_, actErr = scope.StartThread(r.Context(), id, user.ID,
 				strings.TrimSpace(r.FormValue("anchor")), body)
 		}
+	case "rename":
+		// Both answers are recorded and both settle the question. The plan is
+		// rebuilt either way, so an approval cannot be carried over from before
+		// it was asked.
+		actErr = scope.AnswerRename(r.Context(), user.ID, id, diff.Rename{
+			Namespace: r.FormValue("namespace"),
+			Table:     r.FormValue("table"),
+			From:      r.FormValue("from"),
+			To:        r.FormValue("to"),
+		}, r.FormValue("verdict") == "renamed", r.FormValue("note"))
 	case "resolve":
 		threadID, perr := strconv.ParseInt(r.FormValue("thread"), 10, 64)
 		if perr != nil {
