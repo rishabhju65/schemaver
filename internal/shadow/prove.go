@@ -26,6 +26,11 @@ type Proof struct {
 	// RevertedTo is where the revert left the schema, when one was proven. A
 	// revert that works returns it to Base.
 	RevertedTo schema.Version
+	// FinalSchema is the schema the statements produced, kept because the
+	// caller deriving a migration from written SQL needs to diff against it and
+	// rebuilding the shadow a second time to read it again would double the
+	// cost of every derivation.
+	FinalSchema *schema.Schema
 }
 
 // StepError names the statement that would not apply.
@@ -116,11 +121,16 @@ func (p *Pool) Prove(ctx context.Context, baseDDL string, statements, revert []s
 		// Fingerprinted even for a statement that changes nothing — a comment
 		// standing in for an unrenderable change, say. The chain has to have one
 		// entry per statement or the executor cannot index into it by ordinal.
-		after, err := fingerprint(ctx, conn)
+		sch, err := introspect.Schema(ctx, conn)
+		if err != nil {
+			return proof, &StepError{Ordinal: i + 1, SQL: sql, Err: err}
+		}
+		after, err := schema.Fingerprint(sch)
 		if err != nil {
 			return proof, &StepError{Ordinal: i + 1, SQL: sql, Err: err}
 		}
 		proof.After = append(proof.After, after)
+		proof.FinalSchema = sch
 	}
 
 	if len(proof.After) > 0 {

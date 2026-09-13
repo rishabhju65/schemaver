@@ -276,6 +276,8 @@ func (w *Worker) handle(ctx context.Context, job *store.Job) error {
 		return w.execute(ctx, job.TargetID)
 	case store.KindProve:
 		return w.prove(ctx, job.TargetID)
+	case store.KindDerive:
+		return w.derive(ctx, job.TargetID)
 	case store.KindRollback:
 		return w.rollback(ctx, job.TargetID)
 	default:
