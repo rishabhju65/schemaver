@@ -44,6 +44,10 @@ already agree, or one of them has not been read yet.</p>
     {{else}}<span class="added">✓ no open questions</span>{{end}}
     {{if .AdminApprovals}}<span class="added">✓ {{.AdminApprovals}} administrator approval(s)</span>
     {{else}}<span class="modified">○ awaiting an administrator</span>{{end}}
+    {{if .PromotionSource}}
+      {{if .PromotionReached}}<span class="added">✓ been through {{.PromotionSource}}</span>
+      {{else}}<span class="removed">✗ not yet through {{.PromotionSource}}</span>{{end}}
+    {{end}}
   </div>
   {{if eq .ProofState "unproven"}}
   {{/* Not a failure of the migration — a failure to check it. Said plainly,
@@ -61,6 +65,16 @@ already agree, or one of them has not been read yet.</p>
   <p class="banner err" style="margin:14px 0 0">
     <b>This migration did not produce the schema it declares.</b><br>
     {{.ProofReason}}
+  </p>
+  {{end}}
+  {{if and .PromotionSource (not .PromotionReached)}}
+  {{/* Usually not a mistake to correct but a step not taken yet, so it reads as
+       an instruction rather than an error. */}}
+  <p class="banner warn" style="margin:14px 0 0">
+    <b>This change has not been through {{.PromotionSource}}.</b>
+    Changes reach this database through the one below it. Run the same change
+    against {{.PromotionSource}} first; once it is at the schema this migration
+    targets, this opens on its own — nothing here needs re-approving.
   </p>
   {{end}}
   {{if eq .RevertProofState "failed"}}

@@ -79,6 +79,17 @@ type ApprovalState struct {
 	// generates one any more (D-022), so its absence is a person's omission
 	// rather than a limit of the engine.
 	RevertWritten bool
+
+	// PromotionSource names the database a change passes through before this
+	// one, or is empty where nothing precedes it. PromotionReached reports that
+	// it has already arrived at this migration's target — which is what "this
+	// has been through staging" means, since a migration names the schema it is
+	// trying to reach.
+	PromotionSource  string
+	PromotionReached bool
+	// PromotionAt is where the lower environment actually sits, so a refusal can
+	// say what it is waiting for rather than only that it is waiting.
+	PromotionAt string
 	// StaleDecisions counts decisions made about statements that have since
 	// been edited. Shown rather than hidden: somebody did read this, and the
 	// page should say their reading no longer applies rather than pretend it
@@ -111,16 +122,24 @@ func (s *Scope) ApprovalState(ctx context.Context, requestID int64) (*ApprovalSt
 		       r.author_id, r.project_id,
 		       m.proof_state, COALESCE(m.proof_reason, ''), m.plan_digest,
 		       m.revert_proof_state, COALESCE(m.revert_proof_reason, ''),
-		       m.revert_authored_at IS NOT NULL
+		       m.revert_authored_at IS NOT NULL,
+		       COALESCE(peer.name, ''),
+		       COALESCE(peer.current_fingerprint, '') = m.to_fingerprint,
+		       COALESCE(peer.current_fingerprint, '')
 		  FROM schemaver.change_request r
 		  JOIN schemaver.migration m ON m.change_request_id = r.id
+		  JOIN schemaver.database d ON d.id = r.database_id
+		  -- The database this one follows. Absent where nothing precedes it, in
+		  -- which case there is no lower environment to have rehearsed anything.
+		  LEFT JOIN schemaver.database peer ON peer.id = d.expected_peer_id
 		 WHERE r.id = $1 AND r.project_id = ANY($2) AND m.superseded_at IS NULL
 		 ORDER BY m.generated_at DESC
 		 LIMIT 1`, requestID, s.projects).
 		Scan(&st.MigrationID, &st.FromFingerprint, &st.ToFingerprint,
 			&renames, &authorID, &projectID, &st.ProofState, &st.ProofReason,
 			&st.PlanDigest, &st.RevertProofState, &st.RevertProofReason,
-			&st.RevertWritten)
+			&st.RevertWritten, &st.PromotionSource, &st.PromotionReached,
+			&st.PromotionAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNoMigration
 	}
@@ -218,6 +237,27 @@ func (st *ApprovalState) evaluate() (bool, string) {
 			st.UnansweredRenames)
 	case st.AdminApprovals == 0:
 		return false, "no project administrator has approved this migration"
+	case st.PromotionSource != "" && !st.PromotionReached:
+		// Checked last, so that everything a person can act on directly is
+		// reported first. This one is usually not a mistake to correct but a
+		// step not taken yet: run the change through the lower environment and
+		// it clears itself.
+		//
+		// "Has this been through staging" is asked as "is staging already at
+		// the schema this migration is aiming for", which is why nothing has to
+		// remember that a rehearsal happened. It also expires on its own: if the
+		// lower environment moves off that schema, this shuts again (D-010).
+		if st.PromotionAt == "" {
+			return false, fmt.Sprintf(
+				"%s has not been read yet, so there is no evidence this change has "+
+					"been through it; changes reach production through the lower "+
+					"environment", st.PromotionSource)
+		}
+		return false, fmt.Sprintf(
+			"this change has not been through %s, which is at %s while this "+
+				"migration targets %s; run it there first",
+			st.PromotionSource, schema.Version(st.PromotionAt).Short(),
+			schema.Version(st.ToFingerprint).Short())
 	}
 	return true, ""
 }

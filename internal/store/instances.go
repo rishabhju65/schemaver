@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+
 	"fmt"
+	"github.com/jackc/pgx/v5"
 	"time"
 )
 
@@ -178,6 +180,24 @@ func (s *Scope) ApplyDatabaseSettings(ctx context.Context, instanceID int64, set
 		if set.PeerID != nil && *set.PeerID == set.ID {
 			return fmt.Errorf("a database cannot be compared against itself")
 		}
+		// The link now also says which environment a change passes through
+		// before this one, so pointing it at a higher environment states that
+		// production precedes staging. Refused rather than warned about: it
+		// would make the execute gate require production to have a change
+		// before staging could have it, which is the sequence this exists to
+		// prevent.
+		if set.PeerID != nil {
+			ok, higher, lower, err := s.ordered(ctx, tx, *set.PeerID, set.ID)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return fmt.Errorf(
+					"%s is a higher environment than %s, so a change cannot reach "+
+						"%s first; this link says which database a change passes "+
+						"through before reaching here", higher, lower, higher)
+			}
+		}
 		if _, err := tx.Exec(ctx, `
 			UPDATE schemaver.database
 			   SET managed = $2, environment_id = $3, expected_peer_id = $4
@@ -189,4 +209,29 @@ func (s *Scope) ApplyDatabaseSettings(ctx context.Context, instanceID int64, set
 		}
 	}
 	return tx.Commit(ctx)
+}
+
+// ordered reports whether a promotion link runs from a lower environment to a
+// higher one.
+//
+// Permissive where it cannot tell. A database with no environment set, or a
+// pair sharing one, says nothing about sequence — plenty of deployments never
+// label their databases, and refusing those would make the field compulsory by
+// the back door.
+func (s *Scope) ordered(ctx context.Context, tx pgx.Tx, sourceID, targetID int64) (ok bool, source, target string, err error) {
+	var sourceRank, targetRank *int
+	var sourceName, targetName string
+	if err := tx.QueryRow(ctx, `
+		SELECT (SELECT e.rank FROM schemaver.environment e WHERE e.id = a.environment_id),
+		       (SELECT e.rank FROM schemaver.environment e WHERE e.id = b.environment_id),
+		       a.name, b.name
+		  FROM schemaver.database a, schemaver.database b
+		 WHERE a.id = $1 AND b.id = $2`, sourceID, targetID).
+		Scan(&sourceRank, &targetRank, &sourceName, &targetName); err != nil {
+		return false, "", "", fmt.Errorf("compare environments: %w", err)
+	}
+	if sourceRank == nil || targetRank == nil {
+		return true, sourceName, targetName, nil
+	}
+	return *sourceRank <= *targetRank, sourceName, targetName, nil
 }

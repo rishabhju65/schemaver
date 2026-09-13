@@ -8,12 +8,18 @@ TLS {{.Instance.TLSMode}}</p>
 {{if .Saved}}<p class="banner ok">Saved. Managed databases are read on the next
 observation cycle.</p>{{end}}
 
+<p class="sub"><b>Follows</b> is the database a change passes through before
+reaching this one — production follows staging. It is what drift compares
+against, and what the execute gate requires: a migration cannot run here until
+the database below it has already reached the schema that migration targets.
+Leave it unset for a database nothing precedes.</p>
+
 <form method="post" action="/instances/{{.Instance.ID}}">
 <input type="hidden" name="csrf" value="{{.CSRF}}">
 <div class="card scroll">
 <table>
 <tr><th>Manage</th><th>Database</th><th>Size</th><th>Environment</th>
-<th>Compare against</th><th>State</th></tr>
+<th>Follows</th><th>State</th></tr>
 {{range .Databases}}
 <tr>
   {{/* A retired database cannot be re-managed from here. Turning the checkbox
