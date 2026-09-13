@@ -11,7 +11,8 @@
 {{if $r.StateReason}}<p class="sub" style="margin-top:-12px">{{$r.StateReason}}</p>{{end}}
 <p class="sub">
   #{{$r.ID}} · {{$r.Author}} ·
-  {{$r.Database}}{{if $r.Source}} ← {{$r.Source}}{{end}}
+  {{$r.Database}}{{if $r.Source}} ← {{$r.Source}}{{end}}{{if $r.Branch}} ←
+  <a href="/branches/{{$r.BranchID}}">{{$r.Branch}}</a>{{end}}
   {{if $r.MigrationID}}<br><span class="fp">{{short $r.From}} → {{short $r.To}}</span>
   · generated {{stamp $r.GeneratedAt}}{{end}}
 </p>
@@ -167,9 +168,11 @@ now, while the choice is still open — not when it is needed.</p>
      and what of this database's own the reader is not about to lose. */}}
 <div class="banner" style="margin-top:22px">
   <b>This is a merge, not an overwrite.</b><br>
-  These two last agreed at <span class="fp">{{short $r.MergeBase}}</span>, and
-  both have changed since. The statements below are only what
-  {{if $r.Source}}{{$r.Source}}{{else}}the other side{{end}} did on its own —
+  {{if $r.Branch}}This branch was cut from {{$r.Database}} at{{else}}These two
+  last agreed at{{end}} <span class="fp">{{short $r.MergeBase}}</span>, and both
+  have changed since. The statements below are only what
+  {{if $r.Source}}{{$r.Source}}{{else if $r.Branch}}the branch{{else}}the other
+  side{{end}} did on its own —
   {{$r.Database}}'s own work is kept, and the schema this ends at
   (<span class="fp">{{short $r.To}}</span>) has both.
   {{if $r.Kept}}

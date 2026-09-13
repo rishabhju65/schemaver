@@ -1,0 +1,50 @@
+{{define "content"}}
+<h1>Branches</h1>
+<p class="sub">A line of schema development with no database behind it. Cut one
+from a database, evolve it by writing statements, then see exactly what
+diverged and merge it back.</p>
+
+{{if .Error}}<p class="banner err">{{.Error}}</p>{{end}}
+
+{{if .CanWrite}}
+<div class="card" style="padding:14px;margin-bottom:18px">
+  <form method="post" action="/branches/new">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <label>Branch from
+      <select name="database" required>
+        <option value="">choose a database</option>
+        {{range .Candidates}}<option value="{{.ID}}">{{.Name}} · {{.Instance}}</option>{{end}}
+      </select>
+    </label>
+    <span class="hint">The branch starts at whatever this database's schema is
+    now. That schema is remembered as where the two last agreed, which is what
+    makes merging back preserve both sides' work rather than overwrite one.</span>
+    <label>Called <input name="name" required placeholder="add-coupons"></label>
+    <label>About <input name="description" placeholder="what this branch is for"></label>
+    <button type="submit">Cut the branch</button>
+  </form>
+</div>
+{{end}}
+
+<div class="card scroll">
+<table>
+<tr><th>Branch</th><th>Cut from</th><th>Diverged by</th><th>Writes</th>
+<th>State</th><th>Cut</th></tr>
+{{range .Rows}}
+<tr>
+  <td><a href="/branches/{{.ID}}">{{.Name}}</a>
+      {{if .Description}}<br><span class="fp">{{.Description}}</span>{{end}}</td>
+  <td>{{if .Origin}}{{.Origin}}{{else}}<span class="fp">removed</span>{{end}}<br>
+      <span class="fp">{{short .Base}}</span></td>
+  <td>{{if .Diverged}}<span class="fp">{{short .Head}}</span>{{else}}<span class="fp">nothing yet</span>{{end}}</td>
+  <td>{{if .Commits}}{{.Commits}}{{else}}<span class="fp">—</span>{{end}}</td>
+  <td>{{if .Open}}<span class="added">open</span>{{else}}<span class="fp">closed</span>{{end}}
+      {{if .WriteError}}<br><span class="removed">last write failed</span>{{end}}</td>
+  <td class="fp">{{stamp .CreatedAt}}</td>
+</tr>
+{{else}}
+<tr><td colspan="6" class="empty">No branches yet.</td></tr>
+{{end}}
+</table>
+</div>
+{{end}}

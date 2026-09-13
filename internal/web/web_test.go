@@ -24,7 +24,8 @@ func server(t *testing.T, setup *auth.Setup, openSignup bool) *Server {
 func TestTemplatesParse(t *testing.T) {
 	s := server(t, auth.Completed(), false)
 	for _, page := range []string{"fleet", "history", "change", "drift", "login", "signup",
-		"instances", "instance_new", "instance", "requests", "request", "activity"} {
+		"instances", "instance_new", "instance", "requests", "request", "activity",
+		"branches", "branch"} {
 		if s.tmpl[page] == nil {
 			t.Errorf("%s template missing", page)
 		}

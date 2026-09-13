@@ -1,0 +1,147 @@
+{{define "content"}}
+{{$b := .B}}
+<h1>{{$b.Name}}</h1>
+<p class="sub">
+  cut from {{if $b.Origin}}{{$b.Origin}}{{else}}a database since removed{{end}}
+  · <span class="fp">{{short $b.Base}} → {{short $b.Head}}</span>
+  · {{$b.CreatedBy}}
+  {{if not $b.Open}}· <span class="removed">closed{{if $b.ClosedReason}}: {{$b.ClosedReason}}{{end}}</span>{{end}}
+</p>
+{{if $b.Description}}<p class="sub">{{$b.Description}}</p>{{end}}
+
+{{if .Error}}<p class="banner err" style="white-space:pre-wrap">{{.Error}}</p>{{end}}
+{{if $b.WriteError}}
+<p class="banner err"><b>The last statements written here did not apply.</b><br>
+<span class="fp" style="white-space:pre-wrap">{{$b.WriteError}}</span></p>
+{{end}}
+
+<h2 style="margin-top:22px">What diverged</h2>
+<p class="sub">The difference between where this branch was cut and where it is
+now — not the journey. Something added and then taken away again is not a
+divergence.</p>
+<div class="card">
+  {{range .Diverged}}
+  <div class="change">
+    <span class="cls {{.Class}}">{{.Class}}</span>
+    <div>{{.Summary}}<br><code class="fp">{{.ID}}</code></div>
+  </div>
+  {{else}}
+  <div class="empty">Nothing yet. This branch is still at the schema it was cut from.</div>
+  {{end}}
+</div>
+
+{{if .Merge}}
+{{$m := .Merge}}
+<h2 style="margin-top:26px">Merging into {{$m.Database}}</h2>
+{{if $m.Clean}}
+<p class="sub">
+  {{if $m.Ours}}{{$m.Database}} has moved on its own since this branch was cut,
+  so this is a merge: {{len $m.Apply}} statement(s) bring the branch's work
+  across and {{$m.Database}}'s own {{len $m.Ours}} change(s) are kept.
+  {{else}}{{$m.Database}} has not changed since this branch was cut, so this is
+  an ordinary bring-into-line.{{end}}
+</p>
+<div class="card">
+  {{range $m.Apply}}
+  <div class="change">
+    <span class="cls {{.Class}}">{{.Class}}</span>
+    <div>{{.Summary}}</div>
+  </div>
+  {{else}}
+  <div class="empty">{{$m.Database}} already has everything this branch did.</div>
+  {{end}}
+</div>
+{{else}}
+<p class="banner err"><b>This branch and {{$m.Database}} disagree.</b><br>
+Both changed the same thing differently since the branch was cut at
+<span class="fp">{{short $m.Branch.Base}}</span>. Which was meant is not
+recoverable from the schemas, so nothing is merged until somebody settles it on
+one side or the other.</p>
+<div class="card">
+  {{range $m.Conflicts}}
+  <div class="change">
+    <span class="cls destructive">conflict</span>
+    <div>{{.Describe}}</div>
+  </div>
+  {{end}}
+</div>
+{{end}}
+{{end}}
+
+{{if and .CanWrite $b.Open}}
+<div class="two-up" style="margin-top:26px">
+  <div>
+    <h2>Write to this branch</h2>
+    <p class="sub">Statements are applied to a throwaway copy of the branch's
+    schema, so PostgreSQL decides whether they work and what they produce.
+    Nothing real is touched.</p>
+    <form method="post" action="/branches/{{$b.ID}}/act" class="edit">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <input type="hidden" name="do" value="write">
+      <textarea name="sql" rows="8" required
+        placeholder="ALTER TABLE public.orders ADD COLUMN channel text;"></textarea>
+      <label>About <input name="message" placeholder="what this write is for"></label>
+      <button type="submit">Apply to the branch</button>
+    </form>
+  </div>
+  <div>
+    <h2>Merge into a database</h2>
+    <p class="sub">Opens an ordinary change request: reviewed, approved,
+    rehearsed and promoted like any other. The database's own work since the cut
+    is kept.</p>
+    <form method="post" action="/branches/{{$b.ID}}/act" class="edit">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <input type="hidden" name="do" value="merge">
+      <select name="database" required>
+        <option value="">choose a database</option>
+        {{range .Candidates}}
+        <option value="{{.ID}}" {{if eq .ID $b.OriginID}}selected{{end}}>{{.Name}} · {{.Instance}}</option>
+        {{end}}
+      </select>
+      <label>Called <input name="title" placeholder="Merge {{$b.Name}} into …"></label>
+      <label>About <input name="description" placeholder="why this is going in"></label>
+      <button type="submit" {{if not $b.Diverged}}disabled{{end}}>Open a change request</button>
+      {{if not $b.Diverged}}<span class="hint">Nothing to merge: this branch has
+      not diverged from where it was cut.</span>{{end}}
+    </form>
+  </div>
+</div>
+{{end}}
+
+<h2 style="margin-top:26px">History</h2>
+<p class="sub">Every write that landed, newest first, with the statements as they
+were written. A diff of two schemas says what changed and never how it was
+expressed; on a branch the wording is the work.</p>
+<div class="card">
+{{range .Commits}}
+<div style="padding:12px 14px;border-bottom:1px solid var(--line)">
+  <p class="sub" style="margin:0 0 6px">
+    <b>{{if .Message}}{{.Message}}{{else}}write {{.Ordinal}}{{end}}</b>
+    · {{.Author}} · {{stamp .At}}
+    · <span class="fp">{{short .From}} → {{short .To}}</span>
+  </p>
+  {{range .Changes}}
+  <div class="change" style="padding-left:0">
+    <span class="cls {{.Class}}">{{.Class}}</span>
+    <div>{{.Summary}}</div>
+  </div>
+  {{end}}
+  <pre class="sql">{{.SQL}}</pre>
+</div>
+{{else}}
+<div class="empty">Nothing written to this branch yet.</div>
+{{end}}
+</div>
+
+{{if and .CanWrite $b.Open}}
+<h2 style="margin-top:26px">Close this branch</h2>
+<p class="sub">Everything it recorded stays readable, and the name becomes
+available again. Nothing further can be written to it.</p>
+<form method="post" action="/branches/{{$b.ID}}/act" class="inline-form">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <input type="hidden" name="do" value="close">
+  <input name="reason" placeholder="why this branch is done">
+  <button type="submit" class="secondary">Close</button>
+</form>
+{{end}}
+{{end}}

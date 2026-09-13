@@ -140,6 +140,13 @@ type RequestDetail struct {
 	MergeBase schema.Version
 	Kept      []diff.Change
 
+	// Branch names the branch this change was merged from, empty when it came
+	// from another database. The page needs it because the other side of the
+	// comparison is then not a database, and without it the reader is left
+	// working out which one it was meant to be.
+	Branch   string
+	BranchID int64
+
 	// AuthoredSQL is the script somebody wrote, where the change was written
 	// rather than derived from another database. Kept so it can be corrected:
 	// a script that would not apply produces no migration and therefore no
@@ -209,6 +216,7 @@ func (s *Scope) Request(ctx context.Context, id int64) (*RequestDetail, error) {
 		       db.name, COALESCE(src.name, ''), r.created_at,
 		       m.id, m.from_fingerprint, m.to_fingerprint, m.generated_at,
 		       m.irreversible_reason, m.merge_base,
+		       COALESCE(br.name, ''), COALESCE(r.branch_id, 0),
 		       COALESCE(m.changes, '[]'::jsonb),
 		       COALESCE(NULLIF(m.rename_candidates, 'null'::jsonb), '[]'::jsonb),
 		       COALESCE(r.authored_sql, ''), COALESCE(m.no_revert_reason, ''),
@@ -218,12 +226,14 @@ func (s *Scope) Request(ctx context.Context, id int64) (*RequestDetail, error) {
 		  LEFT JOIN schemaver.database src ON src.id = r.source_database_id
 		  LEFT JOIN schemaver.app_user u ON u.id = r.author_id
 		  LEFT JOIN schemaver.app_user cb ON cb.id = r.closed_by
+		  LEFT JOIN schemaver.branch br ON br.id = r.branch_id
 		  LEFT JOIN schemaver.migration m
 		         ON m.change_request_id = r.id AND m.superseded_at IS NULL
 		 WHERE r.id = $1 AND r.project_id = ANY($2)`, id, s.projects).
 		Scan(&d.ID, &d.Title, &d.Description, &d.State, &d.StateReason, &d.Author,
 			&d.Database, &d.Source, &d.CreatedAt,
 			&migrationID, &from, &to, &generatedAt, &irreversible, &mergeBase,
+			&d.Branch, &d.BranchID,
 			&changesJSON, &renamesJSON, &d.AuthoredSQL, &d.NoRevertReason,
 			&d.ClosedAt, &d.ClosedBy)
 	if errors.Is(err, pgx.ErrNoRows) {

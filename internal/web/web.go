@@ -156,7 +156,7 @@ func New(s *store.Store, setup *auth.Setup, openSignup bool, targets netguard.Po
 		setup: setup, openSignup: openSignup, targets: targets}
 	for _, page := range []string{"fleet", "history", "change", "drift", "login", "signup",
 		"instances", "instance_new", "instance", "requests", "request_new", "request",
-		"activity", "retire", "request_write"} {
+		"activity", "retire", "request_write", "branches", "branch"} {
 		t, err := template.New("layout").Funcs(funcs).ParseFS(files,
 			"templates/layout.html", "templates/"+page+".html")
 		if err != nil {
@@ -187,6 +187,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /databases/{id}/restore", s.requireWriter(s.restore))
 	mux.HandleFunc("POST /databases/{id}/read", s.requireWriter(s.readNow))
 	mux.HandleFunc("GET /instances", s.requireUser(s.instances))
+	mux.HandleFunc("GET /branches", s.requireUser(s.branches))
+	mux.HandleFunc("GET /branches/{id}", s.requireUser(s.branch))
+	mux.HandleFunc("POST /branches/new", s.requireWriter(s.branchNew))
+	mux.HandleFunc("POST /branches/{id}/act", s.requireWriter(s.branchAct))
 	mux.HandleFunc("GET /requests", s.requireUser(s.requests))
 	mux.HandleFunc("GET /requests/{id}", s.requireUser(s.request))
 	mux.HandleFunc("GET /requests/new", s.requireWriter(s.requestNew))
