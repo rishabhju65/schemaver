@@ -43,8 +43,56 @@ type Server struct {
 }
 
 // funcs are the helpers templates use to render values a person can read.
+// stateTone maps a request state to how it should read at a glance: neutral
+// while nothing is happening, blue while something is, amber when it wants a
+// person, green when it landed, and grey once it is over.
+//
+// Kept beside the explanations rather than in the template, because a state
+// whose colour says one thing and whose sentence says another is worse than
+// either alone.
+var stateTone = map[string]string{
+	"INITIATED":         "idle",
+	"STAGE_SANITY":      "busy",
+	"IN_REVIEW":         "busy",
+	"READY_TO_EXECUTE":  "busy",
+	"EXECUTING":         "busy",
+	"CHANGES_REQUESTED": "attention",
+	"FAILED":            "attention",
+	"NEEDS_ATTENTION":   "attention",
+	"STALE":             "attention",
+	"COMPLETED":         "good",
+	"DONE":              "good",
+	"REVERTED":          "ended",
+	"CLOSED":            "ended",
+}
+
+// stateMeaning says what a state means in a sentence, because the name alone
+// does not distinguish "ran and finished with" from "ran and undone".
+var stateMeaning = map[string]string{
+	"INITIATED":         "just opened; working out what it does",
+	"STAGE_SANITY":      "rehearsing against a throwaway copy",
+	"IN_REVIEW":         "waiting for somebody to read it",
+	"READY_TO_EXECUTE":  "approved and queued",
+	"EXECUTING":         "applying statements to a database now",
+	"CHANGES_REQUESTED": "sent back to its author",
+	"FAILED":            "the run failed and the database is unchanged",
+	"NEEDS_ATTENTION":   "stopped part way; a person has to decide",
+	"STALE":             "the database moved; this must be regenerated",
+	"COMPLETED":         "applied, and still undoable",
+	"DONE":              "applied and finished with",
+	"REVERTED":          "applied, then undone",
+	"CLOSED":            "ended without running",
+}
+
 var funcs = template.FuncMap{
-	"short": func(v schema.Version) string { return v.Short() },
+	"tone": func(state string) string {
+		if t, ok := stateTone[state]; ok {
+			return t
+		}
+		return "idle"
+	},
+	"meaning": func(state string) string { return stateMeaning[state] },
+	"short":   func(v schema.Version) string { return v.Short() },
 	// clock renders the wall-clock time of a log entry. Seconds are kept: two
 	// events a second apart is the difference between a statement running and a
 	// statement waiting.
@@ -151,6 +199,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /requests/{id}/revise", s.requireWriter(s.revise))
 	mux.HandleFunc("POST /requests/{id}/irreversible", s.requireWriter(s.declareIrreversible))
 	mux.HandleFunc("POST /requests/{id}/close", s.requireWriter(s.closeRequest))
+	mux.HandleFunc("POST /requests/{id}/done", s.requireWriter(s.markDone))
 	mux.HandleFunc("POST /project", s.requireUser(s.switchProject))
 	mux.HandleFunc("GET /instances/{id}", s.requireUser(s.instanceDetail))
 

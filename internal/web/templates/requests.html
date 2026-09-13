@@ -16,7 +16,7 @@ when the change exists nowhere yet.</span></p>{{end}}
   <td><a href="/requests/{{.ID}}">{{.Title}}</a><br>
       <span class="fp">{{.Author}}</span></td>
   <td>{{.Database}}{{if .Source}}<br><span class="fp">← {{.Source}}</span>{{end}}</td>
-  <td><span class="tag">{{.State}}</span>
+  <td><span class="state {{tone .State}}">{{.State}}</span>
       {{if .StateReason}}<br><span class="fp">{{.StateReason}}</span>{{end}}</td>
   <td>{{if .Changes}}{{.Changes}}{{else}}<span class="fp">—</span>{{end}}</td>
   <td>{{if .OpenThreads}}<span class="modified">{{.OpenThreads}}</span>{{else}}<span class="fp">—</span>{{end}}</td>

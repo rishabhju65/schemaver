@@ -77,6 +77,13 @@ background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:
 td select{width:auto;min-width:110px;margin-top:0;padding:4px 7px;font-size:12px}
 button.secondary{background:transparent;color:var(--fg);border:1px solid var(--line)}
 button:disabled{opacity:.45;cursor:not-allowed}
+.state{display:inline-block;padding:2px 10px;border-radius:99px;font-size:11px;
+font-weight:600;letter-spacing:.03em;text-transform:uppercase;border:1px solid}
+.state.idle{color:var(--dim);border-color:var(--line);background:var(--card)}
+.state.busy{color:var(--accent);border-color:var(--accent)}
+.state.attention{color:var(--mod);border-color:var(--mod)}
+.state.good{color:var(--add);border-color:var(--add)}
+.state.ended{color:var(--dim);border-color:var(--dim);background:var(--card)}
 .btn{display:inline-block;padding:7px 14px;border-radius:6px;background:var(--accent);
 color:#fff;text-decoration:none;font-weight:600;font-size:13px}
 .banner.ok{border-color:var(--add);color:var(--add)}

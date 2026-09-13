@@ -1,8 +1,16 @@
 {{define "content"}}
 {{$r := .R}}
 <h1>{{$r.Title}}</h1>
+{{/* The state, what it means, and why — in that order, because the name alone
+     does not tell "ran and finished with" from "ran and undone". Coloured so a
+     reader knows which kind of state it is before reading the word. */}}
 <p class="sub">
-  #{{$r.ID}} · {{$r.Author}} · <span class="tag">{{$r.State}}</span> ·
+  <span class="state {{tone $r.State}}">{{$r.State}}</span>
+  <span class="fp">{{meaning $r.State}}</span>
+</p>
+{{if $r.StateReason}}<p class="sub" style="margin-top:-12px">{{$r.StateReason}}</p>{{end}}
+<p class="sub">
+  #{{$r.ID}} · {{$r.Author}} ·
   {{$r.Database}}{{if $r.Source}} ← {{$r.Source}}{{end}}
   {{if $r.MigrationID}}<br><span class="fp">{{short $r.From}} → {{short $r.To}}</span>
   · generated {{stamp $r.GeneratedAt}}{{end}}
@@ -201,18 +209,26 @@ now, while the choice is still open — not when it is needed.</p>
 </p>
 {{end}}
 
-{{if and $.CanWrite (ne $r.State "CLOSED") (ne $r.State "EXECUTING")}}
+{{if and $.CanWrite (not $.Settled) (ne $r.State "EXECUTING")}}
 {{/* COMPLETED says the statements ran; it does not say anybody is finished.
      The rollback stays on offer until somebody says the hour after a change
      landed is over, which is what this is for — and it is equally the ending
      for a request abandoned in review, or one left in NEEDS_ATTENTION after
      the database was sorted out by hand. */}}
 <div class="card pad" style="margin-top:22px">
+  {{if $r.Ran}}
+  <form method="post" action="/requests/{{$r.ID}}/done" class="inline-form">
+    <input type="hidden" name="csrf" value="{{$.CSRF}}">
+    <input name="note" placeholder="anything worth recording — optional">
+    <button type="submit" class="secondary">Done</button>
+  </form>
+  {{else}}
   <form method="post" action="/requests/{{$r.ID}}/close" class="inline-form">
     <input type="hidden" name="csrf" value="{{$.CSRF}}">
-    <input name="note" placeholder="why this is finished — optional">
-    <button type="submit" class="secondary">Close this request</button>
+    <input name="note" placeholder="why this is not going ahead — optional">
+    <button type="submit" class="secondary">Close without running</button>
   </form>
+  {{end}}
   <span class="hint">Nothing further can be changed afterwards: no edits, no
   decisions, no comments{{if $r.Rollback}}, and the rollback above stops being
   offered — undoing it then means proposing the reverse as its own change{{end}}.
@@ -239,7 +255,7 @@ the one before it, and is rehearsed against its own schema first.</p>
 </div>
 {{end}}
 
-{{if and (eq $r.State "CLOSED") $r.ClosedAt}}
+{{if and $.Settled $r.ClosedAt}}
 <p class="banner" style="margin-top:22px">
   <b>Closed</b> {{stamp $r.ClosedAt}}{{if $r.ClosedBy}} by {{$r.ClosedBy}}{{end}}.
   {{if $r.StateReason}}{{$r.StateReason}}{{end}}<br>
@@ -377,7 +393,9 @@ a run is kept with that run, below.</p>
 {{end}}
 
 {{with $r.Execution}}
-<h2 style="margin-top:26px">Execution</h2>
+<h2 style="margin-top:26px">{{if eq .Direction "revert"}}Rollback{{else}}Execution{{end}}</h2>
+{{if eq .Direction "revert"}}<p class="sub">Undoing the migration. These are the
+statements written as the way back, not the ones that applied the change.</p>{{end}}
 <div class="card pad">
   <div class="gates">
     <span class="{{if eq .State "completed"}}added{{else if eq .State "running"}}modified{{else}}removed{{end}}">
@@ -463,7 +481,7 @@ something.</p>
 <div class="card pad" style="margin-top:10px">
   <div class="gates">
     <span class="{{if eq .State "completed"}}added{{else}}removed{{end}}">{{.State}}</span>
-    <span class="fp">{{.Done}} of {{.Total}} applied</span>
+    <span class="fp">{{if eq .Direction "revert"}}rollback · {{end}}{{.Done}} of {{.Total}} applied</span>
     <span class="fp">{{dur .Elapsed}}</span>
     <span class="fp">{{clock .Started}}</span>
   </div>
@@ -497,7 +515,7 @@ something.</p>
   <div class="comment"><b>{{.Author}}</b> <span class="fp">{{stamp .CreatedAt}}</span>
     <div>{{.Body}}</div></div>
   {{end}}
-  {{if and $.CanWrite (eq .Status "open")}}
+  {{if and $.CanWrite $.Discussable (eq .Status "open")}}
   <form method="post" action="/requests/{{$r.ID}}/act" class="inline-form">
     <input type="hidden" name="csrf" value="{{$.CSRF}}">
     <input type="hidden" name="do" value="comment">
@@ -522,7 +540,12 @@ something.</p>
 <p class="sub">Nothing discussed yet.</p>
 {{end}}
 
-{{if .CanWrite}}
+{{if not .Discussable}}
+<p class="sub"><span class="fp">The discussion is closed: this change is already
+being applied, or has been, and a comment cannot alter what happens now.</span></p>
+{{end}}
+
+{{if and .CanWrite .Discussable}}
 <div class="card pad" style="margin-top:16px">
   <form method="post" action="/requests/{{$r.ID}}/act">
     <input type="hidden" name="csrf" value="{{.CSRF}}">

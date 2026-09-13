@@ -51,14 +51,30 @@ func (w *Worker) rollback(ctx context.Context, migrationID, databaseID int64) er
 		return err
 	}
 
-	// A completed rollback closes the request rather than completing it. The
-	// change did not happen: saying COMPLETED would record the opposite of what
-	// took place, and leaving it open would invite somebody to press execute
-	// again on a migration that has just been undone.
+	// A completed rollback ends the request as REVERTED. Not COMPLETED, which
+	// would record the opposite of what took place; not CLOSED, which is where
+	// a request goes that never ran at all. Somebody glancing at a list should
+	// be able to tell a change that was undone from one that was abandoned
+	// without opening either.
 	state, reason := outcome.State, outcome.Reason
 	if outcome.State == executor.StateCompleted {
-		state = "CLOSED"
-		reason = "rolled back; the database is at " + outcome.Final.Short()
+		// Only once every target is back. A chain is undone in reverse, one at
+		// a time, so saying REVERTED after the first would report the change
+		// gone while the environments below it still carry it.
+		back, left, perr := w.store.RollbackProgress(context.WithoutCancel(ctx),
+			x.RequestID, migrationID, x.DatabaseID)
+		switch {
+		case perr != nil:
+			w.log.Warn("could not work out what is left to undo", "error", perr)
+			state, reason = "REVERTED", "rolled back; the database is at "+outcome.Final.Short()
+		case left > 0:
+			state = "COMPLETED"
+			reason = fmt.Sprintf("%s rolled back, %d of %d; %d still carrying the change",
+				x.DatabaseName, back, back+left, left)
+		default:
+			state = "REVERTED"
+			reason = "rolled back; the database is at " + outcome.Final.Short()
+		}
 	}
 	if serr := w.store.SetRequestState(context.WithoutCancel(ctx), x.RequestID,
 		state, reason); serr != nil {

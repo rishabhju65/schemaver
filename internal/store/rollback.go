@@ -33,6 +33,9 @@ var ErrNoRevert = errors.New("no revert has been written for this migration")
 type Rollback struct {
 	MigrationID int64
 	RequestID   int64
+	// DatabaseID is the target this rollback would undo — the last one in the
+	// chain still carrying the change.
+	DatabaseID int64
 	// From is where the database is now; To is where undoing would leave it.
 	From, To schema.Version
 	Steps    []RevertStep
@@ -68,6 +71,30 @@ func (s *Scope) PlanRollback(ctx context.Context, migrationID int64) (*Rollback,
 		return nil, fmt.Errorf("load migration for rollback: %w", err)
 	}
 	r.From, r.To = schema.Version(live), schema.Version(from)
+
+	// Which database to undo. A change reaches its targets in promotion order,
+	// so it is taken back in the reverse: production first, then the
+	// environment below it. Undoing staging while production still has the
+	// change would leave the lower environment behind the higher one, which is
+	// the arrangement the promotion order exists to prevent.
+	err = s.store.pool.QueryRow(ctx, `
+		SELECT t.database_id, COALESCE(d.current_fingerprint, '')
+		  FROM schemaver.change_request_target t
+		  JOIN schemaver.database d ON d.id = t.database_id
+		  JOIN schemaver.migration m ON m.id = $2
+		 WHERE t.change_request_id = $1
+		   AND COALESCE(d.current_fingerprint, '') = m.to_fingerprint
+		 ORDER BY t.position DESC
+		 LIMIT 1`, r.RequestID, migrationID).Scan(&r.DatabaseID, &live)
+	if err != nil {
+		// No target is at the migration's schema, so there is nothing this
+		// revert was written for.
+		if from == to {
+			return nil, ErrNothingToRollBack
+		}
+		return nil, ErrNothingToRollBack
+	}
+	r.From = schema.Version(live)
 
 	switch {
 	case live == from:
@@ -108,16 +135,18 @@ func (s *Scope) EnqueueRollback(ctx context.Context, actorID, migrationID int64)
 	// Keyed on the migration and where the database is, so pressing twice
 	// queues once — while a rollback from a different state is a different
 	// piece of work and gets its own job.
-	key := fmt.Sprintf("rollback:%d:%s", migrationID, plan.From.Short())
+	// Keyed on the migration and the database, so pressing twice enqueues once
+	// while the next database back up the chain is its own piece of work.
+	key := fmt.Sprintf("rollback:%d:%d", migrationID, plan.DatabaseID)
 	if _, err := s.store.pool.Exec(ctx, `
 		INSERT INTO schemaver.job
-		    (kind, target_kind, target_id, instance_id, weight, idempotency_key)
-		SELECT 'rollback', 'migration', $1, d.instance_id, 8, $2
-		  FROM schemaver.migration m
-		  JOIN schemaver.change_request r ON r.id = m.change_request_id
-		  JOIN schemaver.database d ON d.id = r.database_id
-		 WHERE m.id = $1
-		ON CONFLICT (idempotency_key) DO NOTHING`, migrationID, key); err != nil {
+		    (kind, target_kind, target_id, database_id, instance_id, weight,
+		     idempotency_key)
+		SELECT 'rollback', 'migration', $1, d.id, d.instance_id, 8, $2
+		  FROM schemaver.database d
+		 WHERE d.id = $3
+		ON CONFLICT (idempotency_key) DO NOTHING`,
+		migrationID, key, plan.DatabaseID); err != nil {
 		return fmt.Errorf("enqueue rollback: %w", err)
 	}
 
@@ -149,6 +178,7 @@ func (s *Store) LoadRollbackExecution(ctx context.Context, migrationID, database
 	}
 
 	x.From, x.To = plan.From, plan.To
+	x.Direction = "revert"
 	x.Steps = x.Steps[:0]
 	for _, st := range plan.Steps {
 		x.Steps = append(x.Steps, Step{

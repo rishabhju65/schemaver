@@ -130,7 +130,7 @@ func (e *Executor) Execute(ctx context.Context, x *store.Execution) (Outcome, er
 	}
 
 	// From here on there is something to watch, so there is something to show.
-	executionID, err := e.store.StartExecution(ctx, x.MigrationID, len(x.Steps))
+	executionID, err := e.store.StartExecution(ctx, x.MigrationID, len(x.Steps), x.Direction)
 	if err != nil {
 		return Outcome{}, err
 	}

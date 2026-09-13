@@ -236,3 +236,25 @@ func (s *Store) PipelineProgress(ctx context.Context, requestID, migrationID, ju
 	}
 	return done, left, nil
 }
+
+// RollbackProgress reports how many targets have been taken back off the
+// migration's schema and how many still carry it.
+//
+// justRan names one the caller has itself seen return, because the read that
+// updates the record is queued after the run and will not have happened yet.
+func (s *Store) RollbackProgress(ctx context.Context, requestID, migrationID, justRan int64) (back, left int, err error) {
+	if err := s.pool.QueryRow(ctx, `
+		SELECT count(*) FILTER (WHERE NOT carries),
+		       count(*) FILTER (WHERE carries)
+		  FROM (
+			SELECT d.id <> $3
+			   AND COALESCE(d.current_fingerprint, '') = m.to_fingerprint AS carries
+			  FROM schemaver.change_request_target t
+			  JOIN schemaver.database d ON d.id = t.database_id
+			  JOIN schemaver.migration m ON m.id = $2
+			 WHERE t.change_request_id = $1
+		  ) x`, requestID, migrationID, justRan).Scan(&back, &left); err != nil {
+		return 0, 0, fmt.Errorf("measure rollback progress: %w", err)
+	}
+	return back, left, nil
+}

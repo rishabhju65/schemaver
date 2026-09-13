@@ -115,6 +115,10 @@ type Execution struct {
 	To   schema.Version
 
 	Steps []Step
+	// Direction says whether this run applies the migration or undoes it. Both
+	// are executions of the same migration, and only the caller knows which.
+	Direction string
+
 	// Expected is the fingerprint each statement should leave behind, from the
 	// shadow proof, or empty if this migration was never proven. Lets a
 	// half-applied migration be placed exactly rather than described as being
@@ -162,6 +166,7 @@ func (s *Store) LoadExecution(ctx context.Context, migrationID, databaseID int64
 		return nil, fmt.Errorf("load execution: %w", err)
 	}
 	x.From, x.To = schema.Version(from), schema.Version(to)
+	x.Direction = "forward"
 
 	if e.password, err = s.credentials(ctx, kind, ref, ciphertext); err != nil {
 		return nil, err
@@ -236,11 +241,15 @@ type Progress struct {
 }
 
 // StartExecution opens an execution record and returns its id.
-func (s *Store) StartExecution(ctx context.Context, migrationID int64, statements int) (int64, error) {
+func (s *Store) StartExecution(ctx context.Context, migrationID int64, statements int, direction string) (int64, error) {
+	if direction == "" {
+		direction = "forward"
+	}
 	var id int64
 	if err := s.pool.QueryRow(ctx, `
-		INSERT INTO schemaver.execution (migration_id, statements_total)
-		VALUES ($1, $2) RETURNING id`, migrationID, statements).Scan(&id); err != nil {
+		INSERT INTO schemaver.execution (migration_id, statements_total, direction)
+		VALUES ($1, $2, $3) RETURNING id`,
+		migrationID, statements, direction).Scan(&id); err != nil {
 		return 0, fmt.Errorf("start execution record: %w", err)
 	}
 	return id, nil

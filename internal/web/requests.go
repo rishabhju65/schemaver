@@ -128,28 +128,32 @@ func (s *Server) request(w http.ResponseWriter, r *http.Request) {
 		"Refresh": detail.Execution() != nil && detail.Execution().Running(),
 		// The author cannot approve their own request unless they are the only
 		// administrator, so the button is hidden rather than offered and refused.
-		// Whether the plan can still be changed, matching exactly what the store
-		// refuses: once a migration is queued the statements are on their way
-		// to a database, and after that they are the record of what ran.
+		// Three questions about where a request is, asked once each rather than
+		// enumerated at every control. A control that is refused on press is
+		// worse than one that is not there, and enumerating states in six
+		// places is how one of them comes to disagree with the store.
 		//
-		// One flag rather than each control testing the state for itself,
-		// because a control that is refused on press is worse than one that is
-		// not there, and that is what happens when one of them forgets.
+		// Settled: over, whatever the ending. Open: the plan can still be
+		// changed. Discussable: a comment can still affect what happens.
+		"Settled": detail.State == "DONE" || detail.State == "REVERTED" ||
+			detail.State == "CLOSED",
+		"Discussable": detail.State != "EXECUTING" && detail.State != "COMPLETED" &&
+			detail.State != "FAILED" && detail.State != "NEEDS_ATTENTION" &&
+			detail.State != "DONE" && detail.State != "REVERTED" &&
+			detail.State != "CLOSED",
 		"Open": detail.State != "READY_TO_EXECUTE" && detail.State != "EXECUTING" &&
-			detail.State != "COMPLETED" && detail.State != "CLOSED" &&
-			detail.State != "NEEDS_ATTENTION",
-		// Only an administrator edits, and only while the statements are still
-		// under review — after that they are on their way to a database, or
-		// they are the record of what ran.
+			detail.State != "COMPLETED" && detail.State != "NEEDS_ATTENTION" &&
+			detail.State != "DONE" && detail.State != "REVERTED" &&
+			detail.State != "CLOSED",
+		// Only an administrator edits, and only while the plan can still change.
 		"CanEdit": user != nil && user.Role == auth.Admin &&
 			detail.MigrationID != 0 &&
 			detail.State != "READY_TO_EXECUTE" && detail.State != "EXECUTING" &&
-			detail.State != "COMPLETED" && detail.State != "CLOSED" &&
-			detail.State != "NEEDS_ATTENTION",
+			detail.State != "COMPLETED" && detail.State != "NEEDS_ATTENTION" &&
+			detail.State != "DONE" && detail.State != "REVERTED" &&
+			detail.State != "CLOSED",
 		// Once a migration is queued the advice has been taken, and once it has
-		// run a verdict is a comment on the past dressed as a gate. The
-		// conversation stays; the review controls go, the way a merged pull
-		// request behaves.
+		// run a verdict is a comment on the past dressed as a gate.
 		"Decidable": detail.State == "INITIATED" || detail.State == "STAGE_SANITY" ||
 			detail.State == "IN_REVIEW" || detail.State == "CHANGES_REQUESTED",
 		"CanDecide": user != nil && user.Role.CanWrite() &&
@@ -539,6 +543,33 @@ func (s *Server) closeRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	back := "/requests/" + strconv.FormatInt(id, 10)
 	if err := scope.CloseRequest(r.Context(), userFrom(r.Context()).ID, id,
+		r.FormValue("note")); err != nil {
+		http.Redirect(w, r, back+"?error="+url.QueryEscape(err.Error()),
+			http.StatusSeeOther)
+		return
+	}
+	http.Redirect(w, r, back, http.StatusSeeOther)
+}
+
+// markDone ends a request whose change ran and which nobody intends to undo.
+func (s *Server) markDone(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "not a request id", http.StatusBadRequest)
+		return
+	}
+	if !checkCSRF(r) {
+		http.Error(w, "invalid form token; reload the page and try again",
+			http.StatusForbidden)
+		return
+	}
+	scope, serr := s.scoped(r)
+	if serr != nil {
+		http.Error(w, serr.Error(), http.StatusInternalServerError)
+		return
+	}
+	back := "/requests/" + strconv.FormatInt(id, 10)
+	if err := scope.MarkDone(r.Context(), userFrom(r.Context()).ID, id,
 		r.FormValue("note")); err != nil {
 		http.Redirect(w, r, back+"?error="+url.QueryEscape(err.Error()),
 			http.StatusSeeOther)

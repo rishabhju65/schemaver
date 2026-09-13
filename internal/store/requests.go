@@ -368,6 +368,8 @@ type ExecutionView struct {
 	Started time.Time
 	Ended   *time.Time
 	Reason  string
+	// Direction says whether this run applied the migration or undid it.
+	Direction string
 	// Final is the fingerprint the database ended at, typed as a version rather
 	// than a string so it renders through the same shortener as every other
 	// fingerprint instead of needing its own.
@@ -427,7 +429,7 @@ func (s *Scope) Executions(ctx context.Context, requestID int64) ([]*ExecutionVi
 	rows, err := s.store.pool.Query(ctx, `
 		SELECT e.id, e.state, e.statements_total, e.statements_done,
 		       e.started_at, e.finished_at, COALESCE(e.reason, ''),
-		       COALESCE(e.final_fingerprint, ''),
+		       e.direction, COALESCE(e.final_fingerprint, ''),
 		       e.current_step, e.current_started_at,
 		       COALESCE(e.wait_event, ''), e.blocked_by,
 		       COALESCE(e.blocker_query, ''),
@@ -450,7 +452,7 @@ func (s *Scope) Executions(ctx context.Context, requestID int64) ([]*ExecutionVi
 		// driver is not asked to know about our named types.
 		var final string
 		if err := rows.Scan(&v.ID, &v.State, &v.Total, &v.Done,
-			&v.Started, &v.Ended, &v.Reason, &final,
+			&v.Started, &v.Ended, &v.Reason, &v.Direction, &final,
 			&v.CurrentStep, &v.CurrentStarted,
 			&v.WaitEvent, &v.BlockedBy, &v.BlockerQuery,
 			&v.Phase, &v.Percent, &v.ObservedAt); err != nil {
@@ -522,6 +524,13 @@ func (s *Scope) Executions(ctx context.Context, requestID int64) ([]*ExecutionVi
 		}
 	}
 	return views, events.Err()
+}
+
+// Ran reports that this change reached a database, so the ending it deserves is
+// "done" rather than "closed".
+func (d *RequestDetail) Ran() bool {
+	return d.State == "COMPLETED" || d.State == "NEEDS_ATTENTION" ||
+		d.State == "FAILED" || len(d.Executions) > 0
 }
 
 // Pipeline reports that this change reaches more than one database.

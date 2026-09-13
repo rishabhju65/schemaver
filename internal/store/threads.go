@@ -41,9 +41,10 @@ type Comment struct {
 // both surprising and unnecessary — the thread simply becomes orphaned, which is
 // meaningful.
 func (s *Scope) StartThread(ctx context.Context, requestID, userID int64, anchor, body string) (int64, error) {
-	// Raising a question on a request nobody will act on again invites an
-	// answer that cannot be acted on either.
-	if err := s.requireOpen(ctx, requestID); err != nil {
+	// Stops once the change is on its way to a database. A comment then cannot
+	// alter what happens, and a question asked at that point reads as though it
+	// might still be answered in time.
+	if err := s.requireDiscussable(ctx, requestID); err != nil {
 		return 0, err
 	}
 	if err := s.requireWrite(); err != nil {
@@ -98,7 +99,7 @@ func (s *Scope) Reply(ctx context.Context, threadID, userID int64, body string) 
 		}
 		return fmt.Errorf("load thread: %w", err)
 	}
-	if err := s.requireOpen(ctx, requestID); err != nil {
+	if err := s.requireDiscussable(ctx, requestID); err != nil {
 		return err
 	}
 

@@ -20,7 +20,25 @@ var ErrAlreadyClosed = errors.New("this request is already closed")
 // One list, consulted by everything that acts on a request, so a new terminal
 // state cannot be added and quietly forgotten by half the callers.
 func settled(state string) bool {
-	return state == "CLOSED"
+	switch state {
+	case "CLOSED", "DONE", "REVERTED":
+		return true
+	}
+	return false
+}
+
+// running reports that statements are being applied right now, or have been.
+//
+// Discussion stops here rather than at the end. Once a change is on its way to
+// a database, a comment cannot alter what happens — and a question asked at
+// that point reads as though it might still be answered in time.
+func running(state string) bool {
+	switch state {
+	case "EXECUTING", "COMPLETED", "FAILED", "NEEDS_ATTENTION",
+		"DONE", "REVERTED", "CLOSED":
+		return true
+	}
+	return false
 }
 
 // decidable reports the states in which a verdict still changes something.
@@ -62,7 +80,17 @@ func (s *Scope) requireDecidable(ctx context.Context, requestID int64) error {
 	return nil
 }
 
-// CloseRequest settles a change request for good.
+// MarkDone ends a request whose migration ran and which nobody intends to undo.
+//
+// Separate from CloseRequest because they are different endings and a list
+// should say which: DONE is a change that landed and is finished with, CLOSED
+// is one that never ran. Both freeze the request; only the words differ, and
+// the words are the point.
+func (s *Scope) MarkDone(ctx context.Context, actorID, requestID int64, note string) error {
+	return s.settle(ctx, actorID, requestID, "DONE", note, "done")
+}
+
+// CloseRequest settles a change request that will not run.
 //
 // The state a request reaches when its migration succeeds is COMPLETED, which
 // says the statements ran. It does not say anybody is finished with it: the
@@ -79,6 +107,11 @@ func (s *Scope) requireDecidable(ctx context.Context, requestID int64) error {
 // review, or one left in NEEDS_ATTENTION after somebody sorted the database out
 // by hand. Both are common and neither had an ending.
 func (s *Scope) CloseRequest(ctx context.Context, actorID, requestID int64, note string) error {
+	return s.settle(ctx, actorID, requestID, "CLOSED", note, "closed")
+}
+
+// settle is the ending both share.
+func (s *Scope) settle(ctx context.Context, actorID, requestID int64, target, note, verb string) error {
 	if err := s.requireWrite(); err != nil {
 		return err
 	}
@@ -126,27 +159,46 @@ func (s *Scope) CloseRequest(ctx context.Context, actorID, requestID int64, note
 
 	reason := strings.TrimSpace(note)
 	if reason == "" {
-		reason = "closed"
+		reason = verb
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE schemaver.change_request
-		   SET state = 'CLOSED', state_reason = $2, closed_at = now(),
+		   SET state = $4, state_reason = $2, closed_at = now(),
 		       closed_by = $3, updated_at = now()
-		 WHERE id = $1`, requestID, reason, actorID); err != nil {
-		return fmt.Errorf("close the request: %w", err)
+		 WHERE id = $1`, requestID, reason, actorID, target); err != nil {
+		return fmt.Errorf("settle the request: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit: %w", err)
 	}
 
-	message := "closed: " + reason
+	message := verb + ": " + reason
 	if cancelled > 0 {
-		message = fmt.Sprintf("closed: %s (%d queued job(s) cancelled)", reason, cancelled)
+		message = fmt.Sprintf("%s: %s (%d queued job(s) cancelled)", verb, reason, cancelled)
 	}
-	s.record(ctx, Info("request.closed", message).
+	s.record(ctx, Info("request."+verb, message).
 		By(actorID).
 		OnRequest(requestID).
 		With(map[string]any{"from": state, "cancelled_jobs": cancelled}))
+	return nil
+}
+
+// ErrNotDiscussable is returned when a request has moved past discussion.
+var ErrNotDiscussable = errors.New(
+	"this change is already being applied, or has been; the discussion is closed")
+
+// requireDiscussable refuses a comment on a request whose change is on its way.
+func (s *Scope) requireDiscussable(ctx context.Context, requestID int64) error {
+	var state string
+	if err := s.store.pool.QueryRow(ctx, `
+		SELECT state FROM schemaver.change_request
+		 WHERE id = $1 AND project_id = ANY($2)`, requestID, s.projects).
+		Scan(&state); err != nil {
+		return fmt.Errorf("check the request is open to discussion: %w", err)
+	}
+	if running(state) {
+		return ErrNotDiscussable
+	}
 	return nil
 }
 
