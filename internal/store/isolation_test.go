@@ -198,3 +198,175 @@ func TestSettingsCannotReachAnotherTenant(t *testing.T) {
 		t.Errorf("a tenant's own environment was refused: %v", err)
 	}
 }
+
+// TestClosingFreezesARequest covers what closing is for: an ending.
+//
+// COMPLETED says the statements ran. It does not say anybody is finished, and
+// the rollback stays on offer afterwards because the hour after a change lands
+// is when somebody decides it was wrong. Closing says that hour is over, and
+// must then hold against every way of acting on a request — including the ones
+// that had no state check at all before this, where a migration that had
+// already run could still be approved.
+func TestClosingFreezesARequest(t *testing.T) {
+	url := os.Getenv("SCHEMAVER_METADATA_URL")
+	if url == "" {
+		t.Skip("set SCHEMAVER_METADATA_URL to run the closing test")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	pool, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	st := store.New(pool, nil)
+
+	var projectID, userID, target, source int64
+	if err := pool.QueryRow(ctx, `
+		SELECT i.project_id,
+		       (SELECT m.user_id FROM schemaver.project_member m
+		         WHERE m.project_id = i.project_id AND m.role = 'admin' LIMIT 1),
+		       d.id, (SELECT id FROM schemaver.database WHERE name = 'shop_staging')
+		  FROM schemaver.database d
+		  JOIN schemaver.instance i ON i.id = d.instance_id
+		 WHERE d.name = 'shop_prod' AND d.current_fingerprint IS NOT NULL`).
+		Scan(&projectID, &userID, &target, &source); err != nil {
+		t.Skipf("no fixtures: %v", err)
+	}
+	scope := st.ForProject(projectID)
+
+	requestID, err := scope.Propose(ctx, userID, target, source, "closing probe", "")
+	if err != nil {
+		t.Skipf("nothing to migrate: %v", err)
+	}
+	t.Cleanup(func() {
+		pool.Exec(context.Background(),
+			`DELETE FROM schemaver.change_request WHERE id = $1`, requestID)
+	})
+	migrationID, err := scope.GenerateMigration(ctx, userID, requestID)
+	if err != nil {
+		t.Skipf("nothing to generate: %v", err)
+	}
+
+	// A queued job, to check closing does not leave work that runs afterwards.
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO schemaver.job (kind, target_kind, target_id, weight, idempotency_key)
+		VALUES ('prove', 'migration', $1, 1, $2)
+		ON CONFLICT (idempotency_key) DO UPDATE SET state = 'pending'`,
+		migrationID, "closeprobe:"+time.Now().Format("150405.000")); err != nil {
+		t.Fatalf("queue work: %v", err)
+	}
+
+	if err := scope.CloseRequest(ctx, userID, requestID, "not going ahead"); err != nil {
+		t.Fatalf("CloseRequest: %v", err)
+	}
+
+	var state string
+	var closedAt *time.Time
+	var closedBy *int64
+	if err := pool.QueryRow(ctx, `
+		SELECT state, closed_at, closed_by FROM schemaver.change_request WHERE id = $1`,
+		requestID).Scan(&state, &closedAt, &closedBy); err != nil {
+		t.Fatalf("read the request back: %v", err)
+	}
+	if state != "CLOSED" || closedAt == nil || closedBy == nil {
+		t.Fatalf("closing recorded state=%s at=%v by=%v", state, closedAt, closedBy)
+	}
+
+	var pending int
+	pool.QueryRow(ctx, `
+		SELECT count(*) FROM schemaver.job
+		 WHERE target_kind = 'migration' AND target_id = $1
+		   AND state IN ('pending', 'running')`, migrationID).Scan(&pending)
+	if pending != 0 {
+		t.Errorf("%d job(s) still queued against a closed request; watching one "+
+			"execute after it was declared finished is the worst reading of the "+
+			"word", pending)
+	}
+
+	// Every way of acting on it now refuses, with the same answer.
+	for name, act := range map[string]func() error{
+		"approving":            func() error { return scope.Decide(ctx, requestID, userID, "approve", "") },
+		"editing a statement":  func() error { return scope.EditStatement(ctx, userID, migrationID, false, 1, "SELECT 1;") },
+		"writing a revert":     func() error { return scope.WriteRevert(ctx, userID, migrationID, "SELECT 1;") },
+		"declaring it one-way": func() error { return scope.DeclareIrreversible(ctx, userID, migrationID, "because") },
+		"starting a thread":    func() error { _, err := scope.StartThread(ctx, requestID, userID, "", "hello"); return err },
+		"queueing execution":   func() error { return scope.EnqueueExecution(ctx, userID, requestID) },
+		"closing it again":     func() error { return scope.CloseRequest(ctx, userID, requestID, "") },
+	} {
+		if err := act(); err == nil {
+			t.Errorf("%s was allowed on a closed request", name)
+		}
+	}
+}
+
+// TestVerdictsFreezeOnceAMigrationHasRun covers the behaviour a merged pull
+// request has: the review controls go, the conversation stays.
+//
+// A review is advice given before a thing happens. Once a migration is queued
+// the advice has been taken; once it has run, approving it is a comment on the
+// past dressed as a gate, and rejecting it does not un-run it. Decide had no
+// state check at all, so a completed migration could still be approved.
+func TestVerdictsFreezeOnceAMigrationHasRun(t *testing.T) {
+	url := os.Getenv("SCHEMAVER_METADATA_URL")
+	if url == "" {
+		t.Skip("set SCHEMAVER_METADATA_URL to run the verdict test")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	pool, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	st := store.New(pool, nil)
+
+	var projectID, userID, target, source int64
+	if err := pool.QueryRow(ctx, `
+		SELECT i.project_id,
+		       (SELECT m.user_id FROM schemaver.project_member m
+		         WHERE m.project_id = i.project_id AND m.role = 'admin' LIMIT 1),
+		       d.id, (SELECT id FROM schemaver.database WHERE name = 'shop_staging')
+		  FROM schemaver.database d
+		  JOIN schemaver.instance i ON i.id = d.instance_id
+		 WHERE d.name = 'shop_prod' AND d.current_fingerprint IS NOT NULL`).
+		Scan(&projectID, &userID, &target, &source); err != nil {
+		t.Skipf("no fixtures: %v", err)
+	}
+	scope := st.ForProject(projectID)
+
+	requestID, err := scope.Propose(ctx, userID, target, source, "verdict probe", "")
+	if err != nil {
+		t.Skipf("nothing to migrate: %v", err)
+	}
+	t.Cleanup(func() {
+		pool.Exec(context.Background(),
+			`DELETE FROM schemaver.change_request WHERE id = $1`, requestID)
+	})
+	if _, err := scope.GenerateMigration(ctx, userID, requestID); err != nil {
+		t.Skipf("nothing to generate: %v", err)
+	}
+
+	// While it is under review, a verdict is accepted.
+	if err := scope.Decide(ctx, requestID, userID, "approve", "looks right"); err != nil {
+		t.Fatalf("approving a request under review: %v", err)
+	}
+
+	// Past review, it is not — in any of the states a request reaches after
+	// somebody has committed to running it.
+	for _, state := range []string{
+		"READY_TO_EXECUTE", "EXECUTING", "COMPLETED", "NEEDS_ATTENTION", "CLOSED",
+	} {
+		if _, err := pool.Exec(ctx,
+			`UPDATE schemaver.change_request SET state = $2 WHERE id = $1`,
+			requestID, state); err != nil {
+			t.Fatalf("set %s: %v", state, err)
+		}
+		if err := scope.Decide(ctx, requestID, userID, "reject", "changed my mind"); err == nil {
+			t.Errorf("a verdict was accepted on a %s request; rejecting it does "+
+				"not un-run it, and approving it is a comment on the past", state)
+		}
+	}
+}

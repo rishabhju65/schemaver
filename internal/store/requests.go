@@ -77,6 +77,11 @@ type Step struct {
 	Note          string
 }
 
+// ErrNoSuchRequest is returned when a request is not there, or belongs to
+// somebody else — the same answer either way, so the error cannot be used to
+// find out which.
+var ErrNoSuchRequest = errors.New("no such change request")
+
 // RequestDetail is everything the review page shows.
 type RequestDetail struct {
 	RequestSummary
@@ -111,6 +116,10 @@ type RequestDetail struct {
 	// undoing is known before the change runs rather than during the incident
 	// (D-012).
 	Revert []RevertStep
+
+	// ClosedAt and ClosedBy record who settled this request and when.
+	ClosedAt *time.Time
+	ClosedBy string
 
 	// NoRevertReason is why this change cannot be undone, where somebody said so
 	// instead of writing a revert.
@@ -187,20 +196,26 @@ func (s *Scope) Request(ctx context.Context, id int64) (*RequestDetail, error) {
 		       m.irreversible_reason,
 		       COALESCE(m.changes, '[]'::jsonb),
 		       COALESCE(NULLIF(m.rename_candidates, 'null'::jsonb), '[]'::jsonb),
-		       COALESCE(r.authored_sql, ''), COALESCE(m.no_revert_reason, '')
+		       COALESCE(r.authored_sql, ''), COALESCE(m.no_revert_reason, ''),
+		       r.closed_at, COALESCE(cb.email, '')
 		  FROM schemaver.change_request r
 		  JOIN schemaver.database db ON db.id = r.database_id
 		  LEFT JOIN schemaver.database src ON src.id = r.source_database_id
 		  LEFT JOIN schemaver.app_user u ON u.id = r.author_id
+		  LEFT JOIN schemaver.app_user cb ON cb.id = r.closed_by
 		  LEFT JOIN schemaver.migration m
 		         ON m.change_request_id = r.id AND m.superseded_at IS NULL
 		 WHERE r.id = $1 AND r.project_id = ANY($2)`, id, s.projects).
 		Scan(&d.ID, &d.Title, &d.Description, &d.State, &d.StateReason, &d.Author,
 			&d.Database, &d.Source, &d.CreatedAt,
 			&migrationID, &from, &to, &generatedAt, &irreversible,
-			&changesJSON, &renamesJSON, &d.AuthoredSQL, &d.NoRevertReason)
+			&changesJSON, &renamesJSON, &d.AuthoredSQL, &d.NoRevertReason,
+			&d.ClosedAt, &d.ClosedBy)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, errors.New("no such change request")
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNoSuchRequest
 	}
 	if err != nil {
 		return nil, fmt.Errorf("load change request %d: %w", id, err)
@@ -269,7 +284,10 @@ func (s *Scope) Request(ctx context.Context, id int64) (*RequestDetail, error) {
 		}
 		// Only once something has run. Before that there is nothing to undo,
 		// and offering the option would suggest otherwise.
-		if len(d.Executions) > 0 {
+		// Not offered once the request is settled: closing gives up the
+		// shortcut deliberately, and a button that refuses on press is worse
+		// than one that is not there.
+		if len(d.Executions) > 0 && d.State != "CLOSED" {
 			switch plan, perr := s.PlanRollback(ctx, d.MigrationID); {
 			case perr == nil:
 				d.Rollback = plan

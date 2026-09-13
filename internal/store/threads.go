@@ -41,6 +41,11 @@ type Comment struct {
 // both surprising and unnecessary — the thread simply becomes orphaned, which is
 // meaningful.
 func (s *Scope) StartThread(ctx context.Context, requestID, userID int64, anchor, body string) (int64, error) {
+	// Raising a question on a request nobody will act on again invites an
+	// answer that cannot be acted on either.
+	if err := s.requireOpen(ctx, requestID); err != nil {
+		return 0, err
+	}
 	if err := s.requireWrite(); err != nil {
 		return 0, err
 	}
@@ -92,6 +97,9 @@ func (s *Scope) Reply(ctx context.Context, threadID, userID int64, body string) 
 			return errors.New("no such thread")
 		}
 		return fmt.Errorf("load thread: %w", err)
+	}
+	if err := s.requireOpen(ctx, requestID); err != nil {
+		return err
 	}
 
 	tx, err := s.store.pool.Begin(ctx)

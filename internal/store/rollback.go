@@ -98,6 +98,12 @@ func (s *Scope) EnqueueRollback(ctx context.Context, actorID, migrationID int64)
 	if err != nil {
 		return err
 	}
+	// Giving up this shortcut is what closing a request costs. The way back is
+	// still available — propose the reverse as its own change, reviewed like
+	// anything else — but not from a request somebody has declared finished.
+	if err := s.requireOpen(ctx, plan.RequestID); err != nil {
+		return err
+	}
 
 	// Keyed on the migration and where the database is, so pressing twice
 	// queues once — while a rollback from a different state is a different

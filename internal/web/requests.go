@@ -110,8 +110,15 @@ func (s *Server) request(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	detail, err := scope.Request(r.Context(), id)
-	if err != nil {
+	if errors.Is(err, store.ErrNoSuchRequest) {
 		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		// Anything else is a fault, not a missing request. Reporting a broken
+		// query as "not found" sends the reader looking for a request that is
+		// sitting right there, which is time spent on the wrong question.
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	user := userFrom(r.Context())
@@ -121,6 +128,16 @@ func (s *Server) request(w http.ResponseWriter, r *http.Request) {
 		"Refresh": detail.Execution() != nil && detail.Execution().Running(),
 		// The author cannot approve their own request unless they are the only
 		// administrator, so the button is hidden rather than offered and refused.
+		// Whether the plan can still be changed, matching exactly what the store
+		// refuses: once a migration is queued the statements are on their way
+		// to a database, and after that they are the record of what ran.
+		//
+		// One flag rather than each control testing the state for itself,
+		// because a control that is refused on press is worse than one that is
+		// not there, and that is what happens when one of them forgets.
+		"Open": detail.State != "READY_TO_EXECUTE" && detail.State != "EXECUTING" &&
+			detail.State != "COMPLETED" && detail.State != "CLOSED" &&
+			detail.State != "NEEDS_ATTENTION",
 		// Only an administrator edits, and only while the statements are still
 		// under review — after that they are on their way to a database, or
 		// they are the record of what ran.
@@ -129,6 +146,12 @@ func (s *Server) request(w http.ResponseWriter, r *http.Request) {
 			detail.State != "READY_TO_EXECUTE" && detail.State != "EXECUTING" &&
 			detail.State != "COMPLETED" && detail.State != "CLOSED" &&
 			detail.State != "NEEDS_ATTENTION",
+		// Once a migration is queued the advice has been taken, and once it has
+		// run a verdict is a comment on the past dressed as a gate. The
+		// conversation stays; the review controls go, the way a merged pull
+		// request behaves.
+		"Decidable": detail.State == "INITIATED" || detail.State == "STAGE_SANITY" ||
+			detail.State == "IN_REVIEW" || detail.State == "CHANGES_REQUESTED",
 		"CanDecide": user != nil && user.Role.CanWrite() &&
 			(detail.Author != user.Email ||
 				(detail.Approval != nil && detail.Approval.SoleAdmin)),
@@ -473,6 +496,33 @@ func (s *Server) declareIrreversible(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := scope.DeclareIrreversible(r.Context(), userFrom(r.Context()).ID,
 		detail.MigrationID, r.FormValue("reason")); err != nil {
+		http.Redirect(w, r, back+"?error="+url.QueryEscape(err.Error()),
+			http.StatusSeeOther)
+		return
+	}
+	http.Redirect(w, r, back, http.StatusSeeOther)
+}
+
+// closeRequest settles a change request for good.
+func (s *Server) closeRequest(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "not a request id", http.StatusBadRequest)
+		return
+	}
+	if !checkCSRF(r) {
+		http.Error(w, "invalid form token; reload the page and try again",
+			http.StatusForbidden)
+		return
+	}
+	scope, serr := s.scoped(r)
+	if serr != nil {
+		http.Error(w, serr.Error(), http.StatusInternalServerError)
+		return
+	}
+	back := "/requests/" + strconv.FormatInt(id, 10)
+	if err := scope.CloseRequest(r.Context(), userFrom(r.Context()).ID, id,
+		r.FormValue("note")); err != nil {
 		http.Redirect(w, r, back+"?error="+url.QueryEscape(err.Error()),
 			http.StatusSeeOther)
 		return

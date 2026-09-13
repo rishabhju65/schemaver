@@ -305,6 +305,13 @@ func (s *Scope) Decide(ctx context.Context, requestID, reviewerID int64, verdict
 		return fmt.Errorf("unknown verdict %q", verdict)
 	}
 
+	// A verdict on something that has already run changes nothing and reads as
+	// though it might. There was no check here at all: a completed migration
+	// could still be approved, and a closed one rejected.
+	if err := s.requireDecidable(ctx, requestID); err != nil {
+		return err
+	}
+
 	var migrationID, projectID int64
 	var from, to, digest string
 	var authorID *int64

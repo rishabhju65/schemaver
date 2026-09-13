@@ -150,6 +150,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /requests/{id}/revert", s.requireWriter(s.writeRevert))
 	mux.HandleFunc("POST /requests/{id}/revise", s.requireWriter(s.revise))
 	mux.HandleFunc("POST /requests/{id}/irreversible", s.requireWriter(s.declareIrreversible))
+	mux.HandleFunc("POST /requests/{id}/close", s.requireWriter(s.closeRequest))
 	mux.HandleFunc("POST /project", s.requireUser(s.switchProject))
 	mux.HandleFunc("GET /instances/{id}", s.requireUser(s.instanceDetail))
 

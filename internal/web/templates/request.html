@@ -33,7 +33,7 @@ or one of them has not been read.</p>
 <p class="sub">Correct it and it is tried again. The title, the description and
 anything said on this page are kept.</p>
 <div class="card pad">
-  {{if $.CanWrite}}
+  {{if and $.CanWrite $.Open}}
   <form method="post" action="/requests/{{$r.ID}}/revise">
     <input type="hidden" name="csrf" value="{{$.CSRF}}">
     <textarea name="sql" rows="12" spellcheck="false" class="script">{{$r.AuthoredSQL}}</textarea>
@@ -200,6 +200,34 @@ now, while the choice is still open — not when it is needed.</p>
 </p>
 {{end}}
 
+{{if and $.CanWrite (ne $r.State "CLOSED") (ne $r.State "EXECUTING")}}
+{{/* COMPLETED says the statements ran; it does not say anybody is finished.
+     The rollback stays on offer until somebody says the hour after a change
+     landed is over, which is what this is for — and it is equally the ending
+     for a request abandoned in review, or one left in NEEDS_ATTENTION after
+     the database was sorted out by hand. */}}
+<div class="card pad" style="margin-top:22px">
+  <form method="post" action="/requests/{{$r.ID}}/close" class="inline-form">
+    <input type="hidden" name="csrf" value="{{$.CSRF}}">
+    <input name="note" placeholder="why this is finished — optional">
+    <button type="submit" class="secondary">Close this request</button>
+  </form>
+  <span class="hint">Nothing further can be changed afterwards: no edits, no
+  decisions, no comments{{if $r.Rollback}}, and the rollback above stops being
+  offered — undoing it then means proposing the reverse as its own change{{end}}.
+  Anything still queued is cancelled.</span>
+</div>
+{{end}}
+
+{{if and (eq $r.State "CLOSED") $r.ClosedAt}}
+<p class="banner" style="margin-top:22px">
+  <b>Closed</b> {{stamp $r.ClosedAt}}{{if $r.ClosedBy}} by {{$r.ClosedBy}}{{end}}.
+  {{if $r.StateReason}}{{$r.StateReason}}{{end}}<br>
+  <span class="fp">Nothing further can be changed here. To undo what it did,
+  propose the reverse as its own change.</span>
+</p>
+{{end}}
+
 {{with $r.Rollback}}
 <h2 style="margin-top:26px">Rolling back</h2>
 <p class="sub">The migration reached its target, so the written revert applies
@@ -277,7 +305,7 @@ proves it returns the schema to where it started, and runs it only if you ask.</
   </div>
   {{end}}
 
-  {{if $.CanWrite}}
+  {{if and $.CanWrite $.Open}}
   <form method="post" action="/requests/{{$r.ID}}/revert">
     <input type="hidden" name="csrf" value="{{$.CSRF}}">
     <input type="hidden" name="migration" value="{{$r.MigrationID}}">
@@ -292,7 +320,7 @@ proves it returns the schema to where it started, and runs it only if you ask.</
     </p>
   </form>
 
-  {{if not $r.HasRevert}}
+  {{if and (not $r.HasRevert) $.Open}}
   <form method="post" action="/requests/{{$r.ID}}/irreversible" style="margin-top:18px">
     <input type="hidden" name="csrf" value="{{$.CSRF}}">
     <label style="color:var(--dim);font-size:13px">Or: this cannot be undone, because
@@ -488,7 +516,7 @@ something.</p>
 </div>
 {{end}}
 
-{{if and .CanDecide $r.MigrationID}}
+{{if and .CanDecide .Decidable $r.MigrationID}}
 <div class="card pad" style="margin-top:16px">
   <b>Decide</b>
   <p class="sub" style="margin:6px 0 12px">Only an administrator's approval opens
