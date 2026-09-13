@@ -42,14 +42,34 @@ func TestAuthoredDataStatementSurvivesGeneration(t *testing.T) {
 
 	var projectID, userID, target, source int64
 	if err := pool.QueryRow(ctx, `
-		SELECT i.project_id,
+		-- Scoped to one project, chosen as the lowest id holding both fixtures.
+		-- Database names are unique per instance, not globally, so an unscoped
+		-- lookup returns several rows the moment a second server is registered
+		-- with a database of the same name — which is ordinary, and which broke
+		-- this query the first time somebody added one.
+		WITH fixture AS (
+			SELECT i.project_id,
+			       min(d.id) FILTER (WHERE d.name = 'shop_prod')    AS target,
+			       min(d.id) FILTER (WHERE d.name = 'shop_staging') AS source
+			  FROM schemaver.database d
+			  JOIN schemaver.instance i ON i.id = d.instance_id
+			 WHERE d.name IN ('shop_prod', 'shop_staging')
+			   -- Observed, not merely present. These tests diff two schemas, so
+			   -- a project whose fixtures have never been read is no use to
+			   -- them — and picking one produces "has not been read yet" rather
+			   -- than anything about what is under test.
+			   AND d.current_fingerprint IS NOT NULL
+			 GROUP BY i.project_id
+			HAVING count(*) FILTER (WHERE d.name = 'shop_prod') > 0
+			   AND count(*) FILTER (WHERE d.name = 'shop_staging') > 0
+			 ORDER BY i.project_id
+			 LIMIT 1
+		)
+		SELECT f.project_id,
 		       (SELECT m.user_id FROM schemaver.project_member m
-		         WHERE m.project_id = i.project_id AND m.role = 'admin' LIMIT 1),
-		       d.id,
-		       (SELECT id FROM schemaver.database WHERE name = 'shop_staging')
-		  FROM schemaver.database d
-		  JOIN schemaver.instance i ON i.id = d.instance_id
-		 WHERE d.name = 'shop_prod'`).
+		         WHERE m.project_id = f.project_id AND m.role = 'admin' LIMIT 1),
+		       f.target, f.source
+		  FROM fixture f`).
 		Scan(&projectID, &userID, &target, &source); err != nil {
 		t.Skipf("no fixtures: %v", err)
 	}
