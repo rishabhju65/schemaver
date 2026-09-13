@@ -33,39 +33,72 @@ func TestProposeReviewApprove(t *testing.T) {
 	defer pool.Close()
 	st := store.New(pool, nil)
 
-	var projectID, userID, target, source int64
+	// Two databases of this test's own, at two schemas that genuinely differ.
+	//
+	// It used to diff the deployment's own shop_prod against shop_staging, and
+	// so depended on them being out of line — which they are only until
+	// something brings them together. Every successful migration, including the
+	// ones this suite runs, consumed the very drift the next run needed, so it
+	// passed once and then reported "the target database already matches the
+	// source schema" until somebody re-introduced a difference by hand.
+	//
+	// No real PostgreSQL databases are involved: propose and generate work from
+	// stored schemas, so two rows pointing at two blobs are a complete fixture.
+	var projectID, userID, credentialID int64
 	if err := pool.QueryRow(ctx, `
-		-- Scoped to one project, chosen as the lowest id holding both fixtures.
-		-- Database names are unique per instance, not globally, so an unscoped
-		-- lookup returns several rows the moment a second server is registered
-		-- with a database of the same name — which is ordinary, and which broke
-		-- this query the first time somebody added one.
-		WITH fixture AS (
-			SELECT i.project_id,
-			       min(d.id) FILTER (WHERE d.name = 'shop_prod')    AS target,
-			       min(d.id) FILTER (WHERE d.name = 'shop_staging') AS source
-			  FROM schemaver.database d
-			  JOIN schemaver.instance i ON i.id = d.instance_id
-			 WHERE d.name IN ('shop_prod', 'shop_staging')
-			   -- Observed, not merely present. These tests diff two schemas, so
-			   -- a project whose fixtures have never been read is no use to
-			   -- them — and picking one produces "has not been read yet" rather
-			   -- than anything about what is under test.
-			   AND d.current_fingerprint IS NOT NULL
-			 GROUP BY i.project_id
-			HAVING count(*) FILTER (WHERE d.name = 'shop_prod') > 0
-			   AND count(*) FILTER (WHERE d.name = 'shop_staging') > 0
-			 ORDER BY i.project_id
-			 LIMIT 1
-		)
-		SELECT f.project_id,
-		       (SELECT m.user_id FROM schemaver.project_member m
-		         WHERE m.project_id = f.project_id AND m.role = 'admin' LIMIT 1),
-		       f.target, f.source
-		  FROM fixture f`).
-		Scan(&projectID, &userID, &target, &source); err != nil {
-		t.Fatalf("find fixtures: %v", err)
+		SELECT m.project_id, m.user_id, i.credential_id
+		  FROM schemaver.project_member m
+		  JOIN schemaver.instance i ON i.project_id = m.project_id
+		 WHERE m.role = 'admin' ORDER BY m.project_id LIMIT 1`).
+		Scan(&projectID, &userID, &credentialID); err != nil {
+		t.Skipf("no project with an administrator and a server: %v", err)
 	}
+
+	// Two schemas this project has actually observed. A blob is readable only
+	// through a snapshot belonging to the caller — that is how D-014 keeps one
+	// project from reading another's schemas — so an arbitrary pair of
+	// fingerprints would be refused however real they are.
+	var older, newer string
+	if err := pool.QueryRow(ctx, `
+		SELECT min(sn.fingerprint), max(sn.fingerprint)
+		  FROM schemaver.snapshot sn
+		  JOIN schemaver.database d ON d.id = sn.database_id
+		  JOIN schemaver.instance i ON i.id = d.instance_id
+		 WHERE i.project_id = $1 AND sn.fingerprint IS NOT NULL`, projectID).
+		Scan(&older, &newer); err != nil || older == newer {
+		t.Skipf("this project has not observed two different schemas: %v", err)
+	}
+
+	var instanceID int64
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO schemaver.instance (project_id, name, host, credential_id)
+		VALUES ($1, 'review-probe', 'probe.invalid', $2) RETURNING id`,
+		projectID, credentialID).Scan(&instanceID); err != nil {
+		t.Skipf("create the probe server: %v", err)
+	}
+	t.Cleanup(func() {
+		bg := context.Background()
+		pool.Exec(bg, `DELETE FROM schemaver.database WHERE instance_id = $1`, instanceID)
+		pool.Exec(bg, `DELETE FROM schemaver.instance WHERE id = $1`, instanceID)
+	})
+
+	var target, source int64
+	for _, d := range []struct {
+		name        string
+		fingerprint string
+		into        *int64
+	}{
+		{"probe_target", older, &target},
+		{"probe_source", newer, &source},
+	} {
+		if err := pool.QueryRow(ctx, `
+			INSERT INTO schemaver.database (instance_id, name, managed, current_fingerprint)
+			VALUES ($1, $2, true, $3) RETURNING id`,
+			instanceID, d.name, d.fingerprint).Scan(d.into); err != nil {
+			t.Fatalf("create %s: %v", d.name, err)
+		}
+	}
+
 	scope := st.ForProject(projectID)
 
 	requestID, err := scope.Propose(ctx, userID, target, source,
