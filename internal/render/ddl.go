@@ -89,11 +89,22 @@ func Schema(s *schema.Schema) string {
 			b.WriteString("\n\n")
 		}
 		for _, sq := range ns.Sequences {
-			if sq.Owned() {
-				// Owned sequences are created by the identity or serial column
-				// that owns them; emitting them here would create them twice.
+			if identityBacked(ns, sq) {
+				// A GENERATED ... AS IDENTITY column creates its own sequence,
+				// so emitting this one would create it twice.
 				continue
 			}
+			// Everything else is created here, including the sequences behind
+			// serial columns. Those were skipped on the assumption that the
+			// column creates them, which is true of `bigserial` as written and
+			// false of what it becomes: the engine reports the column as
+			// `bigint DEFAULT nextval(...)`, and that default creates nothing.
+			// The result was DDL that could not run — and since this is how
+			// every shadow rebuilds a schema, no database with a serial column
+			// could be rehearsed against, proven, or branched from.
+			//
+			// Ownership is attached after the tables exist, which is also the
+			// order pg_dump uses, because OWNED BY names a column.
 			b.WriteString(sequenceDDL(ns.Name, sq))
 			b.WriteString("\n\n")
 		}
@@ -125,12 +136,53 @@ func Schema(s *schema.Schema) string {
 			}
 		}
 	}
+	for _, ns := range s.Namespaces {
+		for _, sq := range ns.Sequences {
+			if !sq.Owned() || identityBacked(ns, sq) {
+				continue
+			}
+			b.WriteString(ownedByDDL(ns.Name, sq))
+			b.WriteString("\n")
+		}
+	}
+
 	comments := commentDDL(s)
 	if comments != "" {
 		b.WriteString("\n")
 		b.WriteString(comments)
 	}
 	return strings.TrimRight(b.String(), "\n") + "\n"
+}
+
+// identityBacked reports a sequence the engine will create by itself, because
+// the column that owns it is declared GENERATED ... AS IDENTITY.
+//
+// The distinction matters and is invisible in the sequence: both an identity
+// column and a serial column own one. The difference is in the column — an
+// identity column carries the declaration that creates it, and a serial column
+// carries only a default that refers to it.
+func identityBacked(ns schema.Namespace, sq schema.Sequence) bool {
+	if !sq.Owned() {
+		return false
+	}
+	for _, t := range ns.Tables {
+		if t.Name != sq.OwnedByTable {
+			continue
+		}
+		for _, c := range t.Columns {
+			if c.Name == sq.OwnedByColumn {
+				return c.Identity != ""
+			}
+		}
+	}
+	return false
+}
+
+// ownedByDDL ties a sequence to the column it belongs to, so that dropping the
+// column drops the sequence with it.
+func ownedByDDL(ns string, sq schema.Sequence) string {
+	return fmt.Sprintf("ALTER SEQUENCE %s OWNED BY %s.%s;",
+		qualify(ns, sq.Name), qualify(ns, sq.OwnedByTable), ident(sq.OwnedByColumn))
 }
 
 // Table renders one table with its constraints and indexes — what the UI shows

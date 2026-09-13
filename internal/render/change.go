@@ -154,7 +154,31 @@ func statementsFor(c diff.Change, before, after objects) []Statement {
 		if !ok {
 			return unrenderable(c, "the table is not present in the target schema")
 		}
-		return one(tableDDL(c.Namespace, t))
+		// A serial column's sequence has to exist before the table that
+		// defaults to it, and nothing else in the change list will create it:
+		// an owned sequence is deliberately not diffed as an object of its own,
+		// because it belongs to its column. So the statements that create the
+		// table create it, and hand it to the column afterwards.
+		//
+		// Identity columns are left alone — the engine creates their sequence
+		// from the column declaration itself.
+		var out []Statement
+		owned := ownedSequences(after, c.Namespace, t)
+		for _, sq := range owned {
+			out = append(out, Statement{
+				SQL: sequenceDDL(c.Namespace, sq), ChangeID: c.ID, Transactional: true,
+				Note: "created for " + t.Name + "." + sq.OwnedByColumn,
+			})
+		}
+		out = append(out, Statement{
+			SQL: tableDDL(c.Namespace, t), ChangeID: c.ID, Transactional: true,
+		})
+		for _, sq := range owned {
+			out = append(out, Statement{
+				SQL: ownedByDDL(c.Namespace, sq), ChangeID: c.ID, Transactional: true,
+			})
+		}
+		return out
 	case diff.DropTable:
 		return one(fmt.Sprintf("DROP TABLE %s;", table))
 
@@ -300,4 +324,24 @@ func SQL(statements []Statement) string {
 		}
 	}
 	return b.String()
+}
+
+// ownedSequences returns the sequences a table's serial columns depend on, in
+// column order, excluding those an identity column creates for itself.
+func ownedSequences(o objects, ns string, t schema.Table) []schema.Sequence {
+	namespace, ok := o.namespaces[ns]
+	if !ok {
+		return nil
+	}
+	var out []schema.Sequence
+	for _, sq := range namespace.Sequences {
+		if sq.OwnedByTable != t.Name {
+			continue
+		}
+		if identityBacked(namespace, sq) {
+			continue
+		}
+		out = append(out, sq)
+	}
+	return out
 }
