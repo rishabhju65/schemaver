@@ -621,8 +621,22 @@ func (s *Scope) MergeBranch(ctx context.Context, actorID, branchID, databaseID i
 			Transactional: st.Transactional, Note: st.Note,
 		})
 	}
+	// Recorded as a merge only where the database has also moved. Where it has
+	// not, the branch's work is the whole difference and this is an ordinary
+	// bring-into-line — saying otherwise would have the review page explaining
+	// a merge that did not happen.
+	//
+	// Where it has moved, this matters for more than the page. The migration
+	// ends at a schema neither side is at, so the promotion gate's shortcut —
+	// is the environment below already at the target — is false forever, and
+	// without the base recorded the gate would shut permanently on every merge
+	// from a branch.
+	mergeBase := ""
+	if len(m.Ours) > 0 {
+		mergeBase = string(m.Branch.Base)
+	}
 	if _, err := s.store.recordMigration(ctx, requestID, fromVersion, m.Target,
-		result, steps, diff.Weight(result.Changes)); err != nil {
+		result, steps, diff.Weight(result.Changes), mergeBase); err != nil {
 		return 0, err
 	}
 	return requestID, nil

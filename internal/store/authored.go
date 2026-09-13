@@ -195,7 +195,7 @@ func (s *Store) RecordDerivation(ctx context.Context, requestID int64, from, to 
 		steps = append(steps, Step{Ordinal: i + 1, SQL: sql, ChangeID: "authored",
 			Transactional: !concurrent(sql)})
 	}
-	return s.recordMigration(ctx, requestID, from, to, result, steps, weight)
+	return s.recordMigration(ctx, requestID, from, to, result, steps, weight, "")
 }
 
 // recordMigration stores a migration and the statements that make it up.
@@ -206,7 +206,12 @@ func (s *Store) RecordDerivation(ctx context.Context, requestID int64, from, to 
 // serves. Both leave the request in review with the same shape behind it, which
 // is what lets the gate, the rehearsal, execution and rollback stay ignorant of
 // where a migration came from.
-func (s *Store) recordMigration(ctx context.Context, requestID int64, from, to schema.Version, result diff.Result, steps []Step, weight int) (int64, error) {
+//
+// mergeBase is empty for anything that is not a merge. Where it is set, the
+// migration ends at a schema neither side is at, and everything downstream that
+// compares against the target — the promotion gate above all — has to know that
+// rather than discover it as a mismatch it cannot explain.
+func (s *Store) recordMigration(ctx context.Context, requestID int64, from, to schema.Version, result diff.Result, steps []Step, weight int, mergeBase string) (int64, error) {
 	changesJSON, err := json.Marshal(result.Changes)
 	if err != nil {
 		return 0, fmt.Errorf("serialize changes: %w", err)
@@ -235,11 +240,12 @@ func (s *Store) recordMigration(ctx context.Context, requestID int64, from, to s
 	if err := tx.QueryRow(ctx, `
 		INSERT INTO schemaver.migration
 		    (change_request_id, from_fingerprint, to_fingerprint, changes,
-		     rename_candidates, irreversible_reason, weight, plan_digest)
-		VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), $7, '')
+		     rename_candidates, irreversible_reason, weight, plan_digest,
+		     merge_base)
+		VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), $7, '', NULLIF($8, ''))
 		RETURNING id`,
 		requestID, string(from), string(to), changesJSON, renamesJSON,
-		irreversibleReason(result), weight).Scan(&migrationID); err != nil {
+		irreversibleReason(result), weight, mergeBase).Scan(&migrationID); err != nil {
 		return 0, fmt.Errorf("store migration: %w", err)
 	}
 

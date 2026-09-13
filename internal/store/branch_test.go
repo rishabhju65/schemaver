@@ -49,6 +49,8 @@ func branchFixture(ctx context.Context, t *testing.T, pool *pgxpool.Pool,
 		pool.Exec(bg, `DELETE FROM schemaver.branch
 		                WHERE origin_database_id IN (SELECT id FROM schemaver.database
 		                                              WHERE instance_id = $1)`, instanceID)
+		pool.Exec(bg, `UPDATE schemaver.database SET expected_peer_id = NULL
+		                WHERE instance_id = $1`, instanceID)
 		pool.Exec(bg, `DELETE FROM schemaver.database WHERE instance_id = $1`, instanceID)
 		pool.Exec(bg, `DELETE FROM schemaver.instance WHERE id = $1`, instanceID)
 	})
@@ -433,5 +435,133 @@ func TestABranchIsNotVisibleToAnotherTenant(t *testing.T) {
 		if b.ID == id {
 			t.Error("the branch appeared in another tenant's list")
 		}
+	}
+}
+
+// TestABranchMergeRecordsItsBase covers the shortcut the promotion gate takes.
+//
+// "Has this been through staging" is asked as "is staging already at the schema
+// this migration targets". A merge targets the ancestor with both sides' work
+// applied, which is a schema staging is never at, so without the base recorded
+// the gate would shut permanently on every merge from a branch — and the page
+// would explain a plain comparison while showing fewer statements than the two
+// schemas differ by.
+func TestABranchMergeRecordsItsBase(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	pool := mergeTestPool(ctx, t)
+	st := store.New(pool, nil)
+
+	projectID, userID, databaseID := branchFixture(ctx, t, pool, table(text("id")))
+	scope := st.ForProject(projectID)
+
+	id, err := scope.CutBranch(ctx, userID, databaseID, "records-base", "")
+	if err != nil {
+		t.Fatalf("CutBranch: %v", err)
+	}
+	base, err := scope.Branch(ctx, id)
+	if err != nil {
+		t.Fatalf("Branch: %v", err)
+	}
+	advance(ctx, t, pool, id, table(text("id"), text("channel")))
+
+	// Only the branch has moved: an ordinary bring-into-line, and claiming a
+	// merge would have the page explaining one that did not happen.
+	plain, err := scope.MergeBranch(ctx, userID, id, databaseID, "plain", "")
+	if err != nil {
+		t.Fatalf("MergeBranch: %v", err)
+	}
+	var recorded *string
+	if err := pool.QueryRow(ctx, `
+		SELECT m.merge_base FROM schemaver.migration m
+		 WHERE m.change_request_id = $1 AND m.superseded_at IS NULL`, plain).
+		Scan(&recorded); err != nil {
+		t.Fatalf("read the merge base: %v", err)
+	}
+	if recorded != nil {
+		t.Errorf("a change where only the branch moved is not a merge, got base %q", *recorded)
+	}
+
+	// Now the database moves too, and it is.
+	moveDatabase(ctx, t, pool, databaseID, table(text("id"), text("audit_ref")))
+	merged, err := scope.MergeBranch(ctx, userID, id, databaseID, "merged", "")
+	if err != nil {
+		t.Fatalf("MergeBranch after both moved: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `
+		SELECT m.merge_base FROM schemaver.migration m
+		 WHERE m.change_request_id = $1 AND m.superseded_at IS NULL`, merged).
+		Scan(&recorded); err != nil {
+		t.Fatalf("read the merge base: %v", err)
+	}
+	if recorded == nil {
+		t.Fatal("both sides moved and no merge base was recorded; the promotion " +
+			"gate would shut on this forever")
+	}
+	if *recorded != string(base.Base) {
+		t.Errorf("merge base = %s, want the schema the branch was cut from (%s)",
+			schema.Version(*recorded).Short(), base.Base.Short())
+	}
+}
+
+// TestAMergedBranchCanStillReachProduction is the same guarantee seen from the
+// gate rather than from the column.
+func TestAMergedBranchCanStillReachProduction(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	pool := mergeTestPool(ctx, t)
+	st := store.New(pool, nil)
+
+	projectID, userID, databaseID := branchFixture(ctx, t, pool, table(text("id")))
+	scope := st.ForProject(projectID)
+
+	// A lower environment for the database the branch will merge into.
+	var instanceID, peerID int64
+	pool.QueryRow(ctx, `SELECT instance_id FROM schemaver.database WHERE id = $1`,
+		databaseID).Scan(&instanceID)
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO schemaver.database (instance_id, name, managed, current_fingerprint)
+		VALUES ($1, 'branch_peer', true, (SELECT current_fingerprint FROM schemaver.database WHERE id = $2))
+		RETURNING id`, instanceID, databaseID).Scan(&peerID); err != nil {
+		t.Fatalf("create the lower environment: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE schemaver.database SET expected_peer_id = $2 WHERE id = $1`,
+		databaseID, peerID); err != nil {
+		t.Fatalf("set the promotion peer: %v", err)
+	}
+
+	id, err := scope.CutBranch(ctx, userID, databaseID, "reaches-prod", "")
+	if err != nil {
+		t.Fatalf("CutBranch: %v", err)
+	}
+	advance(ctx, t, pool, id, table(text("id"), text("channel")))
+	moveDatabase(ctx, t, pool, databaseID, table(text("id"), text("audit_ref")))
+
+	requestID, err := scope.MergeBranch(ctx, userID, id, databaseID, "reaching", "")
+	if err != nil {
+		t.Fatalf("MergeBranch: %v", err)
+	}
+
+	// The lower environment has not had the branch's work, so the gate holds.
+	state, err := scope.ApprovalState(ctx, requestID)
+	if err != nil {
+		t.Fatalf("ApprovalState: %v", err)
+	}
+	if state.PromotionReached {
+		t.Error("the lower environment does not have this work and the gate opened")
+	}
+
+	// Once it does, the gate opens — without anything re-approving, and without
+	// the lower environment ever being at the merged schema, which contains the
+	// target database's own work and is not something it could reach.
+	moveDatabase(ctx, t, pool, peerID, table(text("id"), text("channel")))
+	after, err := scope.ApprovalState(ctx, requestID)
+	if err != nil {
+		t.Fatalf("ApprovalState after the lower environment caught up: %v", err)
+	}
+	if !after.PromotionReached {
+		t.Errorf("the lower environment has this change and the gate stayed shut: %s",
+			after.Reason)
 	}
 }
