@@ -252,17 +252,17 @@ func (s *Scope) ApplyDatabaseSettings(ctx context.Context, instanceID int64, set
 	// observation, which is up to an interval away — so the page would show a
 	// divergence from the old predecessor until then. Asking for a read now
 	// costs one job and makes the change take effect when it is made.
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+	// Queued after the commit, so a read is never asked for on account of a
+	// change that did not take.
 	for _, id := range repointed {
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO schemaver.job
-			    (kind, target_kind, target_id, instance_id, weight, run_after)
-			SELECT 'observe', 'database', d.id, d.instance_id, 1, now()
-			  FROM schemaver.database d
-			 WHERE d.id = $1 AND d.managed AND d.retired_at IS NULL`, id); err != nil {
-			return fmt.Errorf("queue a read after repointing %d: %w", id, err)
+		if err := s.store.ObserveNow(ctx, id); err != nil {
+			return err
 		}
 	}
-	return tx.Commit(ctx)
+	return nil
 }
 
 // ordered reports whether a promotion link runs from a lower environment to a

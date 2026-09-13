@@ -383,3 +383,38 @@ func (s *Server) requestWrite(w http.ResponseWriter, r *http.Request) {
 	}
 	http.Redirect(w, r, "/requests/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
 }
+
+// readNow asks for a database to be read again.
+//
+// The observation cycle picks up an outside change within an interval on its
+// own, so this is not how schemaver learns about one — it is how somebody stops
+// wondering whether it has. Having just added a table by hand, the useful thing
+// is to see it reflected now rather than to refresh a page for five minutes
+// hoping.
+func (s *Server) readNow(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "not a database id", http.StatusBadRequest)
+		return
+	}
+	if !checkCSRF(r) {
+		http.Error(w, "invalid form token; reload the page and try again",
+			http.StatusForbidden)
+		return
+	}
+	scope, serr := s.scoped(r)
+	if serr != nil {
+		http.Error(w, serr.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	back := r.Header.Get("Referer")
+	if back == "" {
+		back = "/"
+	}
+	if err := scope.ReadNow(r.Context(), userFrom(r.Context()).ID, id); err != nil {
+		http.Redirect(w, r, "/?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
+		return
+	}
+	http.Redirect(w, r, back, http.StatusSeeOther)
+}

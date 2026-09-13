@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -282,5 +283,91 @@ func TestChangingWhatADatabaseFollows(t *testing.T) {
 	if queued != 0 {
 		t.Errorf("saving the page unchanged queued %d read(s); every visit to the "+
 			"settings page would cost one", queued)
+	}
+}
+
+// TestReadNowForcesAFullRead covers asking for a database to be read again,
+// which somebody does after changing it outside schemaver.
+//
+// The distinction that matters is against the ordinary cycle: a scheduled read
+// takes a cheap digest first and skips the full introspection when it decides
+// nothing has changed. Somebody pressing this believes something has changed
+// and wants to know, and the reason they are asking is often that they suspect
+// the shortcut — so the digest is cleared and the next read is a full one.
+func TestReadNowForcesAFullRead(t *testing.T) {
+	url := os.Getenv("SCHEMAVER_METADATA_URL")
+	if url == "" {
+		t.Skip("set SCHEMAVER_METADATA_URL to run the read test")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pool, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	st := store.New(pool, nil)
+
+	var projectID, userID, target int64
+	if err := pool.QueryRow(ctx, `
+		SELECT i.project_id,
+		       (SELECT m.user_id FROM schemaver.project_member m
+		         WHERE m.project_id = i.project_id AND m.role = 'admin' LIMIT 1),
+		       d.id
+		  FROM schemaver.database d
+		  JOIN schemaver.instance i ON i.id = d.instance_id
+		 WHERE d.name = 'shop_prod'`).Scan(&projectID, &userID, &target); err != nil {
+		t.Skipf("no fixtures: %v", err)
+	}
+	scope := st.ForProject(projectID)
+
+	// A digest present, as it would be after any ordinary read.
+	if _, err := pool.Exec(ctx,
+		`UPDATE schemaver.database SET probe_digest = 'stale' WHERE id = $1`,
+		target); err != nil {
+		t.Fatalf("set a digest: %v", err)
+	}
+	pool.Exec(ctx, `DELETE FROM schemaver.job WHERE kind = 'observe' AND target_id = $1`, target)
+
+	if err := scope.ReadNow(ctx, userID, target); err != nil {
+		t.Fatalf("ReadNow: %v", err)
+	}
+
+	var digest *string
+	if err := pool.QueryRow(ctx,
+		`SELECT probe_digest FROM schemaver.database WHERE id = $1`, target).
+		Scan(&digest); err != nil {
+		t.Fatalf("read the digest back: %v", err)
+	}
+	if digest != nil {
+		t.Errorf("the digest survived at %q, so the next read may take the "+
+			"shortcut the reader is asking to bypass", *digest)
+	}
+
+	var queued int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM schemaver.job
+		 WHERE kind = 'observe' AND target_id = $1 AND state = 'pending'`,
+		target).Scan(&queued); err != nil {
+		t.Fatalf("count queued reads: %v", err)
+	}
+	if queued == 0 {
+		t.Error("nothing was queued, so the read happens whenever the cycle " +
+			"next comes round — which is what the reader is trying to avoid")
+	}
+
+	// An unmanaged database is not read on request, because it is not read at
+	// all; saying so beats queueing work that will be skipped.
+	var wasManaged bool
+	pool.QueryRow(ctx, `SELECT managed FROM schemaver.database WHERE id = $1`,
+		target).Scan(&wasManaged)
+	t.Cleanup(func() {
+		pool.Exec(context.Background(),
+			`UPDATE schemaver.database SET managed = $2 WHERE id = $1`, target, wasManaged)
+	})
+	pool.Exec(ctx, `UPDATE schemaver.database SET managed = false WHERE id = $1`, target)
+	if err := scope.ReadNow(ctx, userID, target); !errors.Is(err, store.ErrNotObservable) {
+		t.Errorf("reading an unmanaged database: %v, want ErrNotObservable", err)
 	}
 }

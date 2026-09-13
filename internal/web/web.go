@@ -137,6 +137,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /databases/{id}/retire", s.requireWriter(s.retire))
 	mux.HandleFunc("POST /databases/{id}/retire", s.requireWriter(s.retire))
 	mux.HandleFunc("POST /databases/{id}/restore", s.requireWriter(s.restore))
+	mux.HandleFunc("POST /databases/{id}/read", s.requireWriter(s.readNow))
 	mux.HandleFunc("GET /instances", s.requireUser(s.instances))
 	mux.HandleFunc("GET /requests", s.requireUser(s.requests))
 	mux.HandleFunc("GET /requests/{id}", s.requireUser(s.request))

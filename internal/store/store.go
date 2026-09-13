@@ -606,3 +606,48 @@ func (s *Store) ObserveNow(ctx context.Context, databaseID int64) error {
 	}
 	return nil
 }
+
+// ErrNotObservable is returned when a database cannot be read on request.
+var ErrNotObservable = errors.New(
+	"this database is not being managed, so schemaver does not read it; manage " +
+		"it on its server's page first")
+
+// ReadNow asks for a full read of one database, on somebody's say-so.
+//
+// Distinct from ObserveNow in one respect that matters: the cheap probe digest
+// is cleared, so the next read is a full introspection rather than a probe that
+// may decide nothing has changed. Somebody pressing this believes something has
+// changed and wants to know — answering from a shortcut would be answering a
+// different question, and the whole reason they are asking is usually that they
+// suspect the shortcut.
+//
+// Scoped, unlike ObserveNow, because this one is reachable from the interface.
+func (s *Scope) ReadNow(ctx context.Context, actorID, databaseID int64) error {
+	if err := s.requireWrite(); err != nil {
+		return err
+	}
+
+	var name string
+	err := s.store.pool.QueryRow(ctx, `
+		UPDATE schemaver.database d
+		   SET probe_digest = NULL
+		  FROM schemaver.instance i
+		 WHERE d.id = $1 AND d.instance_id = i.id AND i.project_id = ANY($2)
+		   AND d.managed AND d.retired_at IS NULL AND d.archived_at IS NULL
+		RETURNING d.name`, databaseID, s.projects).Scan(&name)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotObservable
+	}
+	if err != nil {
+		return fmt.Errorf("ask for a read of database %d: %w", databaseID, err)
+	}
+
+	if err := s.store.ObserveNow(ctx, databaseID); err != nil {
+		return err
+	}
+	s.record(ctx, Info("database.read_requested",
+		"asked for "+name+" to be read again").
+		By(actorID).
+		OnDatabase(databaseID))
+	return nil
+}

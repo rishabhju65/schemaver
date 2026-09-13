@@ -40,6 +40,16 @@ single project in the header to add databases.</p>
       {{else if not .Managed}}<span class="fp">not managed</span>
       {{else}}<span class="added">ok</span>{{end}}</td>
   <td class="fp">
+    {{/* Next to "Last read", which is where somebody looks when wondering
+         whether a change made outside schemaver has been noticed yet. The cycle
+         would find it within an interval anyway; this is how they stop
+         wondering. */}}
+    {{if and $.CanWrite (not .Retired) .Managed}}
+    <form method="post" action="/databases/{{.ID}}/read" style="display:inline">
+      <input type="hidden" name="csrf" value="{{$.CSRF}}">
+      <button type="submit" class="linky">Read now</button>
+    </form><br>
+    {{end}}
     {{if .Retired}}
       {{if $.CanWrite}}
       <form method="post" action="/databases/{{.ID}}/restore" style="display:inline">
