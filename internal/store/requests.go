@@ -129,6 +129,17 @@ type RequestDetail struct {
 	// instead of writing a revert.
 	NoRevertReason string
 
+	// MergeBase is where the two databases last agreed, set only when this
+	// migration is a merge. Kept is what the target database did on its own
+	// since then — work this change preserves rather than discards.
+	//
+	// Shown because otherwise the page is quietly confusing: the statements are
+	// fewer than the difference between the two schemas, and the declared
+	// target is a fingerprint neither database is at. A reviewer checking the
+	// arithmetic would find it wrong and have nothing to explain it.
+	MergeBase schema.Version
+	Kept      []diff.Change
+
 	// AuthoredSQL is the script somebody wrote, where the change was written
 	// rather than derived from another database. Kept so it can be corrected:
 	// a script that would not apply produces no migration and therefore no
@@ -189,7 +200,7 @@ func (s *Scope) Request(ctx context.Context, id int64) (*RequestDetail, error) {
 	var changesJSON, renamesJSON []byte
 	var irreversible *string
 	var migrationID *int64
-	var from, to *string
+	var from, to, mergeBase *string
 	var generatedAt *time.Time
 
 	err := s.store.pool.QueryRow(ctx, `
@@ -197,7 +208,7 @@ func (s *Scope) Request(ctx context.Context, id int64) (*RequestDetail, error) {
 		       COALESCE(r.state_reason, ''), COALESCE(u.email, 'removed user'),
 		       db.name, COALESCE(src.name, ''), r.created_at,
 		       m.id, m.from_fingerprint, m.to_fingerprint, m.generated_at,
-		       m.irreversible_reason,
+		       m.irreversible_reason, m.merge_base,
 		       COALESCE(m.changes, '[]'::jsonb),
 		       COALESCE(NULLIF(m.rename_candidates, 'null'::jsonb), '[]'::jsonb),
 		       COALESCE(r.authored_sql, ''), COALESCE(m.no_revert_reason, ''),
@@ -212,7 +223,7 @@ func (s *Scope) Request(ctx context.Context, id int64) (*RequestDetail, error) {
 		 WHERE r.id = $1 AND r.project_id = ANY($2)`, id, s.projects).
 		Scan(&d.ID, &d.Title, &d.Description, &d.State, &d.StateReason, &d.Author,
 			&d.Database, &d.Source, &d.CreatedAt,
-			&migrationID, &from, &to, &generatedAt, &irreversible,
+			&migrationID, &from, &to, &generatedAt, &irreversible, &mergeBase,
 			&changesJSON, &renamesJSON, &d.AuthoredSQL, &d.NoRevertReason,
 			&d.ClosedAt, &d.ClosedBy)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -228,6 +239,18 @@ func (s *Scope) Request(ctx context.Context, id int64) (*RequestDetail, error) {
 		d.GeneratedAt = *generatedAt
 		if irreversible != nil {
 			d.IrreversibleReason = *irreversible
+		}
+		if mergeBase != nil {
+			d.MergeBase = schema.Version(*mergeBase)
+			// Worked out from the two schemas rather than stored, because both
+			// are already kept and a stored copy could disagree with them.
+			// Read failures are not fatal: the merge itself is recorded, and a
+			// page that will not load is worse than one missing a summary.
+			if base, err := s.Blob(ctx, d.MergeBase); err == nil && base != nil {
+				if ours, err := s.Blob(ctx, d.From); err == nil && ours != nil {
+					d.Kept = diff.Compute(base, ours).Changes
+				}
+			}
 		}
 		if err := json.Unmarshal(changesJSON, &d.ByRisk); err != nil {
 			return nil, fmt.Errorf("decode changes: %w", err)

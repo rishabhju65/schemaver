@@ -159,6 +159,33 @@ now, while the choice is still open — not when it is needed.</p>
 </div>
 {{end}}
 
+{{if $r.MergeBase}}
+{{/* Without this the page is quietly wrong to anybody checking it. The target
+     fingerprint is a schema neither database is at, and the statements are
+     fewer than the difference between the two — both correct, neither
+     explicable from anything else shown. Say that this is a merge, from where,
+     and what of this database's own the reader is not about to lose. */}}
+<div class="banner" style="margin-top:22px">
+  <b>This is a merge, not an overwrite.</b><br>
+  These two last agreed at <span class="fp">{{short $r.MergeBase}}</span>, and
+  both have changed since. The statements below are only what
+  {{if $r.Source}}{{$r.Source}}{{else}}the other side{{end}} did on its own —
+  {{$r.Database}}'s own work is kept, and the schema this ends at
+  (<span class="fp">{{short $r.To}}</span>) has both.
+  {{if $r.Kept}}
+  <div style="margin-top:10px">
+    <span class="sub">Kept, and not in the statements below:</span>
+    {{range $r.Kept}}
+    <div class="change">
+      <span class="cls {{.Class}}">{{.Class}}</span>
+      <div>{{.Summary}}</div>
+    </div>
+    {{end}}
+  </div>
+  {{end}}
+</div>
+{{end}}
+
 <div class="two-up">
   <div>
     <h2>Changes</h2>
