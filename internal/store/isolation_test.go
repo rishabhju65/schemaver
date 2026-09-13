@@ -128,6 +128,68 @@ func TestSettingsCannotReachAnotherTenant(t *testing.T) {
 		t.Errorf("a cross-tenant environment was written anyway: %d", *env)
 	}
 
+	// Naming another tenant's database as the row to edit. The scoped UPDATE
+	// meant the row itself never changed, which is what made this quiet: the
+	// work done *around* the update ran on the unvalidated id anyway. A victim
+	// paired database whose settings are saved with no peer gets its open drift
+	// alarms resolved — by somebody in another organisation, with no error and
+	// no trace on their own pages.
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO schemaver.database (instance_id, name, managed)
+		VALUES ($1, 'db-victim-lower', true)`, victim.instance); err != nil {
+		t.Fatalf("create the victim's lower database: %v", err)
+	}
+	var victimLower int64
+	pool.QueryRow(ctx, `
+		SELECT id FROM schemaver.database WHERE instance_id = $1 AND name = 'db-victim-lower'`,
+		victim.instance).Scan(&victimLower)
+	if _, err := pool.Exec(ctx,
+		`UPDATE schemaver.database SET expected_peer_id = $2 WHERE id = $1`,
+		victim.database, victimLower); err != nil {
+		t.Fatalf("pair the victim: %v", err)
+	}
+	var observed, expected string
+	if err := pool.QueryRow(ctx,
+		`SELECT min(fingerprint), max(fingerprint) FROM schemaver.schema_blob`).
+		Scan(&observed, &expected); err != nil || observed == expected {
+		t.Skipf("need two schemas to raise an alarm: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO schemaver.drift
+		       (database_id, observed_fingerprint, expected_fingerprint, expected_source)
+		VALUES ($1, $2, $3, 'declared')`, victim.database, observed, expected); err != nil {
+		t.Fatalf("raise the victim's alarm: %v", err)
+	}
+
+	if err := scope.ApplyDatabaseSettings(ctx, attacker.instance,
+		[]store.DatabaseSettings{{ID: victim.database, Managed: true}}); err == nil {
+		t.Error("one tenant saved settings naming another tenant's database")
+	} else if !strings.Contains(err.Error(), "no such database") {
+		t.Errorf("the refusal names the foreign database rather than reading as "+
+			"missing, which counts what others have: %v", err)
+	}
+
+	var alarm string
+	if err := pool.QueryRow(ctx,
+		`SELECT status FROM schemaver.drift WHERE database_id = $1`,
+		victim.database).Scan(&alarm); err != nil {
+		t.Fatalf("read the victim's alarm back: %v", err)
+	}
+	if alarm != "open" {
+		t.Errorf("the victim's drift alarm was %s by another organisation; for a "+
+			"drift monitor, silently closing somebody else's alarm is the worst "+
+			"of these", alarm)
+	}
+
+	var queued int
+	pool.QueryRow(ctx, `
+		SELECT count(*) FROM schemaver.job WHERE kind = 'observe' AND target_id = $1`,
+		victim.database).Scan(&queued)
+	if queued != 0 {
+		t.Errorf("%d read(s) were queued against another tenant's database, which "+
+			"makes schemaver connect to their server on an attacker's say-so", queued)
+	}
+
 	// And the tenant's own values still work, so the check is not simply
 	// refusing everything.
 	if err := scope.ApplyDatabaseSettings(ctx, attacker.instance,

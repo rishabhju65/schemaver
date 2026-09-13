@@ -178,11 +178,39 @@ func (s *Scope) ApplyDatabaseSettings(ctx context.Context, instanceID int64, set
 	var repointed []int64
 	var unpaired []int64
 	for _, set := range settings {
+		// Before anything reads or writes on account of this id.
+		//
+		// The UPDATE further down is scoped, so the row itself was safe — but
+		// everything around it took the id on trust: the read below, the drift
+		// rows closed when a database is unpaired, and the read queued when one
+		// is re-pointed. A form naming another tenant's database therefore
+		// resolved their alarms and made schemaver connect to their server,
+		// while the row edit correctly did nothing. That asymmetry is what made
+		// it quiet.
+		//
+		// Scoped to the instance in the URL as well as to the project, so the
+		// address of the page constrains what the page may act on. Refused with
+		// the same words as a missing database, because a refusal that tells
+		// "somebody else's" from "not there" is a way to count what others have.
+		var ours bool
+		if err := tx.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM schemaver.database d
+				  JOIN schemaver.instance i ON i.id = d.instance_id
+				 WHERE d.id = $1 AND d.instance_id = $2
+				   AND i.project_id = ANY($3))`,
+			set.ID, instanceID, s.projects).Scan(&ours); err != nil {
+			return fmt.Errorf("check the database: %w", err)
+		}
+		if !ours {
+			return fmt.Errorf("no such database")
+		}
+
 		var was *int64
 		if err := tx.QueryRow(ctx,
 			`SELECT expected_peer_id FROM schemaver.database WHERE id = $1`,
 			set.ID).Scan(&was); err != nil {
-			return fmt.Errorf("read the current predecessor of %d: %w", set.ID, err)
+			return fmt.Errorf("read the current predecessor: %w", err)
 		}
 		switch {
 		case was == nil && set.PeerID == nil:
