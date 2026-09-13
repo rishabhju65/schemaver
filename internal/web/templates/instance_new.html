@@ -34,10 +34,21 @@ GRANT CONNECT ON DATABASE your_database TO schemaver;</pre>
   </div>
   <label>Role<input name="username" value="{{.Form.Username}}" required></label>
   <label>Password<input type="password" name="password" value="{{.Form.Password}}" required></label>
+  <label>Engine
+    <select name="engine">
+      {{$cur := .Form.Engine}}
+      {{range .Engines}}<option value="{{.}}" {{if eq . $cur}}selected{{end}}>{{index $.EngineLabels .}}</option>{{end}}
+    </select>
+    <span class="hint">PostgreSQL only for now. Other engines are intended;
+    until one exists, introspection has nothing to read on a server that is not
+    PostgreSQL.</span></label>
   <label>Database to connect to
     <input name="database" value="{{.Form.Database}}" placeholder="postgres">
-    <span class="hint">Used only to enumerate the server. Each database is
-    connected to individually afterwards.</span></label>
+    <span class="hint">The database to open first, used only to enumerate the
+    server — each one found is connected to individually afterwards. Not the
+    engine: it is a database name, and hosted Postgres often names it something
+    else (Neon uses <code>neondb</code>, DigitalOcean <code>defaultdb</code>).
+    </span></label>
   <label>TLS
     <select name="tls_mode">
       {{range .TLSModes}}<option value="{{.}}" {{if eq . $.Form.TLSMode}}selected{{end}}>{{.}}</option>{{end}}

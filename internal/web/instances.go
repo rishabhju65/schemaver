@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -18,9 +19,27 @@ import (
 // protective.
 var tlsModes = []string{"disable", "allow", "prefer", "require", "verify-ca", "verify-full"}
 
+// engines are the database engines a server may be registered as.
+//
+// One entry, deliberately shown as a choice rather than assumed. D-003 restricts
+// this to PostgreSQL for now and intends a second engine later; a field with one
+// option says that plainly, where a form with no field at all leaves somebody to
+// discover the limit by having their MySQL server rejected — or worse, by
+// registering it and watching introspection fail against a catalog that is not
+// there.
+//
+// The list is also where a second engine arrives. Adding one here, relaxing the
+// CHECK on instance.engine, and implementing its introspection are three edits;
+// none of them is a form redesign.
+var engines = []string{"postgres"}
+
+// engineLabels render an engine as it is written rather than as it is stored.
+var engineLabels = map[string]string{"postgres": "PostgreSQL"}
+
 // connectionForm is what the add-server page collects.
 type connectionForm struct {
 	Name, Host, Port, Username, Password, Database, TLSMode string
+	Engine                                                  string
 }
 
 func formFrom(r *http.Request) connectionForm {
@@ -32,6 +51,7 @@ func formFrom(r *http.Request) connectionForm {
 		Password: r.FormValue("password"),
 		Database: strings.TrimSpace(r.FormValue("database")),
 		TLSMode:  r.FormValue("tls_mode"),
+		Engine:   r.FormValue("engine"),
 	}
 	if f.Port == "" {
 		f.Port = "5432"
@@ -41,6 +61,14 @@ func formFrom(r *http.Request) connectionForm {
 	}
 	if f.TLSMode == "" {
 		f.TLSMode = "require"
+	}
+	// Anything unrecognised becomes the default rather than being carried
+	// forward. A crafted POST cannot introduce an engine the product has no
+	// introspection for, and the database CHECK would refuse it a step later
+	// anyway — this just makes the refusal legible instead of an integrity
+	// error.
+	if !slices.Contains(engines, f.Engine) {
+		f.Engine = engines[0]
 	}
 	return f
 }
@@ -106,9 +134,11 @@ func (s *Server) instances(w http.ResponseWriter, r *http.Request) {
 // Testing is a separate submission on purpose: a credential is stored only after
 // the operator has seen proof that it works and what it can reach.
 func (s *Server) instanceNew(w http.ResponseWriter, r *http.Request) {
-	form := connectionForm{Port: "5432", Database: "postgres", TLSMode: "require"}
+	form := connectionForm{Port: "5432", Database: "postgres", TLSMode: "require",
+		Engine: engines[0]}
 	data := func(f connectionForm, pre *introspect.Preflight, cause error) map[string]any {
-		m := map[string]any{"Form": f, "TLSModes": tlsModes, "Preflight": pre}
+		m := map[string]any{"Form": f, "TLSModes": tlsModes,
+			"Engines": engines, "EngineLabels": engineLabels, "Preflight": pre}
 		if cause != nil {
 			m["Error"] = cause.Error()
 		}

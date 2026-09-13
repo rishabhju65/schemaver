@@ -2,6 +2,9 @@ package web
 
 import (
 	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -238,6 +241,65 @@ func TestEmptyStatesOfferAWayForward(t *testing.T) {
 		if !strings.Contains(out.String(), c.want) {
 			t.Errorf("the empty %s page (canWrite=%v orgWide=%v) does not mention %q",
 				c.page, c.canWrite, c.orgWide, c.want)
+		}
+	}
+}
+
+// TestAddServerFormShowsTheEngineAsAChoice checks the two fields that look
+// alike and are not.
+//
+// "Engine" is what kind of server this is, and has one option because D-003
+// restricts the product to PostgreSQL for now. "Database to connect to" is the
+// database opened first in order to enumerate the others, and must stay free
+// text: hosted Postgres rarely calls it postgres — Neon uses neondb,
+// DigitalOcean defaultdb — so constraining it to a fixed value would make the
+// most likely servers to onboard impossible to onboard.
+func TestAddServerFormShowsTheEngineAsAChoice(t *testing.T) {
+	s := server(t, auth.Completed(), false)
+
+	var out strings.Builder
+	if err := s.tmpl["instance_new"].ExecuteTemplate(&out, "layout", map[string]any{
+		"Form":         connectionForm{Port: "5432", Database: "postgres", TLSMode: "require", Engine: "postgres"},
+		"TLSModes":     tlsModes,
+		"Engines":      engines,
+		"EngineLabels": engineLabels,
+		"Title":        "Add a server", "Nav": "instances", "CSRF": "t",
+	}); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	page := out.String()
+
+	if !strings.Contains(page, `<select name="engine"`) {
+		t.Error("the engine is not offered as a choice; a limit nobody can see " +
+			"is discovered by having a server rejected")
+	}
+	if !strings.Contains(page, "PostgreSQL") {
+		t.Error("the engine option is not labelled as it is written")
+	}
+	for _, other := range []string{"MySQL", "MariaDB", "SQL Server"} {
+		if strings.Contains(page, other) {
+			t.Errorf("%s is offered and cannot work: nothing introspects it", other)
+		}
+	}
+
+	// The bootstrap database stays free text. This is the guard, not decoration:
+	// making it a fixed list would lock out every hosted Postgres that does not
+	// name its first database "postgres".
+	if !strings.Contains(page, `<input name="database"`) {
+		t.Error("the database to connect to is no longer free text; a server " +
+			"whose first database is neondb or defaultdb could not be registered")
+	}
+}
+
+// TestUnknownEngineFallsBackRatherThanPassingThrough covers a POST that did not
+// come from the form.
+func TestUnknownEngineFallsBackRatherThanPassingThrough(t *testing.T) {
+	for _, submitted := range []string{"mysql", "", "postgres; DROP TABLE x", "POSTGRES"} {
+		r := httptest.NewRequest(http.MethodPost, "/instances/new",
+			strings.NewReader("engine="+url.QueryEscape(submitted)))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		if got := formFrom(r).Engine; got != "postgres" {
+			t.Errorf("engine %q was carried forward as %q, want postgres", submitted, got)
 		}
 	}
 }
