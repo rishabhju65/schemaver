@@ -3,8 +3,28 @@
 <p class="sub">
 {{if .Database}}Every observed change to this database.
 {{else}}Every observed schema change, newest first.{{end}}
-Nothing here was applied by schemaver — with no executor yet, every change
-arrived from outside, which is what drift means.</p>
+A change schemaver did not apply arrived from outside, which is what drift
+means.</p>
+
+{{with .Summary}}
+<div class="card pad" style="margin-bottom:18px">
+  <div class="gates">
+    <span class="fp">{{.Instance}}</span>
+    {{if .Environment}}<span class="tag">{{.Environment}}</span>{{end}}
+    {{if .Observed}}<span class="fp">{{short .Observed}}</span>{{end}}
+    {{if .Retired}}<span class="removed">retired</span>
+    {{else if .Managed}}<span class="added">managed</span>
+    {{else}}<span class="fp">not managed</span>{{end}}
+  </div>
+  <p class="sub" style="margin:12px 0 0">
+    {{if .Follows}}Follows <b>{{.Follows}}</b> — a change reaches here through
+    it, and drift is measured against it.
+    {{else}}Follows nothing, so nothing precedes it: no drift is measured and
+    the execute gate does not wait on another environment.{{end}}
+    {{if $.CanWrite}}<a href="/instances/{{.InstanceID}}">Change this</a>{{end}}
+  </p>
+</div>
+{{end}}
 <div class="card scroll">
 <table>
 <tr><th>When</th>{{if not .Database}}<th>Database</th><th>Environment</th>{{end}}

@@ -207,6 +207,37 @@ func (s *Scope) ApplyDatabaseSettings(ctx context.Context, instanceID int64, set
 		// would make the execute gate require production to have a change
 		// before staging could have it, which is the sequence this exists to
 		// prevent.
+		// A chain that comes back to where it started cannot be satisfied: each
+		// database waits for the one below it to reach a schema, and in a cycle
+		// every member is below every other, so none may go first. It deadlocks
+		// the gate silently — nothing errors, the requests simply never become
+		// executable and the reason each gives names a database that is waiting
+		// on it.
+		//
+		// The rank check below catches the common shape of this, but only when
+		// both databases carry an environment. Plenty do not, and that is
+		// allowed, so the cycle has to be refused on its own terms.
+		if set.PeerID != nil {
+			var cycles bool
+			if err := tx.QueryRow(ctx, `
+				WITH RECURSIVE chain(id) AS (
+					SELECT $1::bigint
+					UNION
+					SELECT d.expected_peer_id FROM schemaver.database d
+					  JOIN chain c ON c.id = d.id
+					 WHERE d.expected_peer_id IS NOT NULL
+				)
+				SELECT EXISTS (SELECT 1 FROM chain WHERE id = $2)`,
+				*set.PeerID, set.ID).Scan(&cycles); err != nil {
+				return fmt.Errorf("check for a cycle: %w", err)
+			}
+			if cycles {
+				return fmt.Errorf(
+					"that would make a loop: the database you are pointing at already " +
+						"follows this one, directly or through others, and a change " +
+						"cannot reach either first")
+			}
+		}
 		if set.PeerID != nil {
 			ok, higher, lower, err := s.ordered(ctx, tx, *set.PeerID, set.ID)
 			if err != nil {

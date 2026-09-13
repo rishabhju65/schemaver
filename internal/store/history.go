@@ -242,3 +242,46 @@ func (s *Scope) Drifts(ctx context.Context, includeResolved bool) ([]DriftRow, e
 	}
 	return out, rows.Err()
 }
+
+// DatabaseSummary is what a database is, as distinct from what has happened to
+// it.
+type DatabaseSummary struct {
+	ID          int64
+	Name        string
+	Instance    string
+	InstanceID  int64
+	Environment string
+	// Follows names the database a change passes through before this one, or is
+	// empty where nothing precedes it.
+	Follows  string
+	Managed  bool
+	Retired  bool
+	Observed schema.Version
+}
+
+// Database reads one database's configuration.
+//
+// Its own query rather than a filter over Fleet: this answers "what is this
+// database" for a page about one, and the fleet answers "what is out there" for
+// a page about all of them. Sharing a shape would tie two pages together that
+// will drift apart.
+func (s *Scope) Database(ctx context.Context, id int64) (*DatabaseSummary, error) {
+	var d DatabaseSummary
+	var fingerprint string
+	err := s.store.pool.QueryRow(ctx, `
+		SELECT d.id, d.name, i.name, i.id, COALESCE(e.name, ''),
+		       COALESCE(p.name, ''), d.managed, d.retired_at IS NOT NULL,
+		       COALESCE(d.current_fingerprint, '')
+		  FROM schemaver.database d
+		  JOIN schemaver.instance i ON i.id = d.instance_id
+		  LEFT JOIN schemaver.environment e ON e.id = d.environment_id
+		  LEFT JOIN schemaver.database p ON p.id = d.expected_peer_id
+		 WHERE d.id = $1 AND i.project_id = ANY($2)`, id, s.projects).
+		Scan(&d.ID, &d.Name, &d.Instance, &d.InstanceID, &d.Environment,
+			&d.Follows, &d.Managed, &d.Retired, &fingerprint)
+	if err != nil {
+		return nil, fmt.Errorf("load database %d: %w", id, err)
+	}
+	d.Observed = schema.Version(fingerprint)
+	return &d, nil
+}

@@ -371,3 +371,98 @@ func TestReadNowForcesAFullRead(t *testing.T) {
 		t.Errorf("reading an unmanaged database: %v, want ErrNotObservable", err)
 	}
 }
+
+// TestFollowingCannotFormALoop covers the arrangement that would jam the
+// promotion gate without any error being raised.
+//
+// Each database waits for the one below it to reach a schema. In a loop every
+// member is below every other, so none may go first: nothing fails, the
+// requests simply never become executable, and the reason each one gives names
+// a database that is itself waiting. Fan-out is a different matter and stays
+// allowed — one staging database legitimately precedes several production ones.
+func TestFollowingCannotFormALoop(t *testing.T) {
+	url := os.Getenv("SCHEMAVER_METADATA_URL")
+	if url == "" {
+		t.Skip("set SCHEMAVER_METADATA_URL to run the loop test")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pool, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	st := store.New(pool, nil)
+
+	var projectID, instanceID, credentialID int64
+	if err := pool.QueryRow(ctx, `
+		SELECT p.id, i.id, i.credential_id FROM schemaver.project p
+		  JOIN schemaver.instance i ON i.project_id = p.id LIMIT 1`).
+		Scan(&projectID, &instanceID, &credentialID); err != nil {
+		t.Skipf("no fixtures: %v", err)
+	}
+	scope := st.ForProject(projectID)
+
+	// Three databases of this test's own, so a real deployment's arrangement is
+	// neither read nor disturbed.
+	var probe int64
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO schemaver.instance (project_id, name, host, credential_id)
+		VALUES ($1, 'loop-probe', 'loop.invalid', $2) RETURNING id`,
+		projectID, credentialID).Scan(&probe); err != nil {
+		t.Skipf("create probe instance: %v", err)
+	}
+	t.Cleanup(func() {
+		bg := context.Background()
+		pool.Exec(bg, `DELETE FROM schemaver.database WHERE instance_id = $1`, probe)
+		pool.Exec(bg, `DELETE FROM schemaver.instance WHERE id = $1`, probe)
+	})
+
+	ids := map[string]int64{}
+	for _, name := range []string{"dev", "stg", "prd"} {
+		var id int64
+		if err := pool.QueryRow(ctx, `
+			INSERT INTO schemaver.database (instance_id, name, managed)
+			VALUES ($1, $2, true) RETURNING id`, probe, name).Scan(&id); err != nil {
+			t.Fatalf("create %s: %v", name, err)
+		}
+		ids[name] = id
+	}
+
+	set := func(id int64, peer *int64) error {
+		return scope.ApplyDatabaseSettings(ctx, probe,
+			[]store.DatabaseSettings{{ID: id, Managed: true, PeerID: peer}})
+	}
+	stg, prd, dev := ids["stg"], ids["prd"], ids["dev"]
+
+	// A chain is fine: prd follows stg follows dev.
+	if err := set(stg, &dev); err != nil {
+		t.Fatalf("stg follows dev: %v", err)
+	}
+	if err := set(prd, &stg); err != nil {
+		t.Fatalf("prd follows stg: %v", err)
+	}
+
+	// Closing it is not, however long the way round.
+	if err := set(dev, &prd); err == nil {
+		t.Error("a three-database loop was accepted; every member waits for " +
+			"every other and none may go first")
+	} else if !strings.Contains(err.Error(), "loop") {
+		t.Errorf("the refusal does not say what is wrong: %v", err)
+	}
+	if err := set(dev, &stg); err == nil {
+		t.Error("a two-database loop was accepted")
+	}
+
+	// Fan-out stays allowed: one database may precede several.
+	var second int64
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO schemaver.database (instance_id, name, managed)
+		VALUES ($1, 'prd2', true) RETURNING id`, probe).Scan(&second); err != nil {
+		t.Fatalf("create prd2: %v", err)
+	}
+	if err := set(second, &stg); err != nil {
+		t.Errorf("two databases following the same one was refused: %v", err)
+	}
+}

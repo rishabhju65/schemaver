@@ -268,12 +268,18 @@ func (s *Server) database(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	name := fmt.Sprintf("database %d", id)
-	if len(entries) > 0 {
-		name = entries[0].Database
+	// What the database is, alongside what has happened to it. Its settings
+	// live on the server's page, which is not somewhere anybody looking at a
+	// database would think to go, so this at least says what they are and where
+	// to change them.
+	summary, err := scope.Database(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
 	}
-	s.render(w, r, "history", name, "history",
-		map[string]any{"Entries": entries, "Database": name})
+	s.render(w, r, "history", summary.Name, "history",
+		map[string]any{"Entries": entries, "Database": summary.Name,
+			"Summary": summary})
 }
 
 // change shows which objects differ across one recorded transition.
