@@ -273,13 +273,13 @@ func (w *Worker) handle(ctx context.Context, job *store.Job) error {
 	case store.KindObserve:
 		return w.observe(ctx, job.TargetID)
 	case store.KindExecute:
-		return w.execute(ctx, job.TargetID)
+		return w.execute(ctx, job.TargetID, job.DatabaseID)
 	case store.KindProve:
 		return w.prove(ctx, job.TargetID)
 	case store.KindDerive:
 		return w.derive(ctx, job.TargetID)
 	case store.KindRollback:
-		return w.rollback(ctx, job.TargetID)
+		return w.rollback(ctx, job.TargetID, job.DatabaseID)
 	default:
 		return fmt.Errorf("unknown job kind %q", job.Kind)
 	}
@@ -290,8 +290,8 @@ func (w *Worker) handle(ctx context.Context, job *store.Job) error {
 // The outcome is always recorded, including when it is one nobody wants. A
 // migration that halted ambiguously must leave a visible NEEDS_ATTENTION and a
 // reason, never an absence.
-func (w *Worker) execute(ctx context.Context, migrationID int64) error {
-	x, err := w.store.LoadExecution(ctx, migrationID)
+func (w *Worker) execute(ctx context.Context, migrationID, databaseID int64) error {
+	x, err := w.store.LoadExecution(ctx, migrationID, databaseID)
 	if err != nil {
 		return err
 	}
@@ -316,8 +316,27 @@ func (w *Worker) execute(ctx context.Context, migrationID int64) error {
 		return err
 	}
 
+	// A pipeline is not finished because one database is. The request stays
+	// open, naming what is done and what is left, until every target has
+	// reached the migration's schema — and the next target is not queued
+	// automatically, because D-024's gate is about somebody looking at what
+	// happened in the lower environment before committing to the next one.
+	state, reason := outcome.State, outcome.Reason
+	if outcome.State == executor.StateCompleted {
+		done, left, derr := w.store.PipelineProgress(context.WithoutCancel(ctx),
+			x.RequestID, migrationID, x.DatabaseID)
+		if derr != nil {
+			w.log.Warn("could not work out what is left of the pipeline", "error", derr)
+		} else if left > 0 {
+			state = "IN_REVIEW"
+			reason = fmt.Sprintf("%s done, %d of %d; %d still to go",
+				x.DatabaseName, done, done+left, left)
+			w.log.Info("pipeline advanced", "migration", migrationID,
+				"database", x.DatabaseName, "done", done, "remaining", left)
+		}
+	}
 	if serr := w.store.SetRequestState(context.WithoutCancel(ctx), x.RequestID,
-		outcome.State, outcome.Reason); serr != nil {
+		state, reason); serr != nil {
 		w.log.Error("recording the outcome failed", "migration", migrationID, "error", serr)
 	}
 

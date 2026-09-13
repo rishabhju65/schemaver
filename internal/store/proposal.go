@@ -59,6 +59,16 @@ func (s *Scope) Propose(ctx context.Context, authorID, databaseID, sourceID int6
 		s.writable, title, description, authorID, databaseID, sourceID).Scan(&id); err != nil {
 		return 0, fmt.Errorf("create change request: %w", err)
 	}
+	// One target, which is what proposing from a peer has always meant: bring
+	// this database in line with that one. A pipeline is something you write
+	// (D-026), because the statements have to be the same for every target and
+	// a diff against one peer is not.
+	if _, err := s.store.pool.Exec(ctx, `
+		INSERT INTO schemaver.change_request_target
+		       (change_request_id, database_id, position)
+		VALUES ($1, $2, 0) ON CONFLICT DO NOTHING`, id, databaseID); err != nil {
+		return 0, fmt.Errorf("record the target: %w", err)
+	}
 	s.record(ctx, Info("request.opened", title).
 		By(authorID).
 		OnRequest(id).

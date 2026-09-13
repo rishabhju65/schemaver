@@ -327,6 +327,10 @@ type Job struct {
 	TargetKind string
 	TargetID   int64
 	InstanceID int64
+	// DatabaseID names which database this job is for, where the target alone
+	// does not say. A migration runs against every database in its pipeline, so
+	// an execute job has to name one.
+	DatabaseID int64
 	Attempts   int
 }
 
@@ -411,7 +415,7 @@ func (s *Store) ClaimJob(ctx context.Context, workerID string, lease time.Durati
 	}
 	var j Job
 	var targetKind *string
-	var targetID, instanceID *int64
+	var targetID, instanceID, databaseID *int64
 
 	err := s.pool.QueryRow(ctx, `
 		UPDATE schemaver.job
@@ -430,10 +434,14 @@ func (s *Store) ClaimJob(ctx context.Context, workerID string, lease time.Durati
 		        -- another would be claimed, fail its precondition, back off and
 		        -- retry — thrashing the queue instead of simply waiting. Ordering
 		        -- becomes emergent rather than something the scheduler tracks.
+		        -- Checked against the database this job is for, not the one the
+		        -- request was opened against. A migration runs along a chain, so
+		        -- by the time production's job is claimable staging has already
+		        -- moved off its starting schema, and reading the request's
+		        -- database would hold the rest of the pipeline unclaimable.
 		        AND (j.kind <> 'execute' OR EXISTS (
 		              SELECT 1 FROM schemaver.migration m
-		                JOIN schemaver.change_request r ON r.id = m.change_request_id
-		                JOIN schemaver.database d ON d.id = r.database_id
+		                JOIN schemaver.database d ON d.id = j.database_id
 		               WHERE m.id = j.target_id
 		                 AND m.superseded_at IS NULL
 		                 AND d.retired_at IS NULL
@@ -458,9 +466,10 @@ func (s *Store) ClaimJob(ctx context.Context, workerID string, lease time.Durati
 		      -- be, and the instance row is read rather than claimed.
 		      FOR UPDATE OF j SKIP LOCKED
 		      LIMIT 1)
-		RETURNING id, kind, target_kind, target_id, instance_id, attempts`,
+		RETURNING id, kind, target_kind, target_id, instance_id, database_id, attempts`,
 		workerID, lease.String(), budget.Floor, budget.Ceiling, budget.Fraction, kinds).
-		Scan(&j.ID, &j.Kind, &targetKind, &targetID, &instanceID, &j.Attempts)
+		Scan(&j.ID, &j.Kind, &targetKind, &targetID, &instanceID, &databaseID,
+			&j.Attempts)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNoJob
 	}
@@ -475,6 +484,9 @@ func (s *Store) ClaimJob(ctx context.Context, workerID string, lease time.Durati
 	}
 	if instanceID != nil {
 		j.InstanceID = *instanceID
+	}
+	if databaseID != nil {
+		j.DatabaseID = *databaseID
 	}
 	return &j, nil
 }

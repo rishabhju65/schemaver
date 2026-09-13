@@ -30,7 +30,7 @@ var ErrNothingWritten = errors.New(
 // the result, which takes seconds at best and much longer on a large schema;
 // holding an HTTP request open for that would make proposing feel broken and
 // would give the work no retry.
-func (s *Scope) ProposeAuthored(ctx context.Context, authorID, databaseID int64, title, description, sql string) (int64, error) {
+func (s *Scope) ProposeAuthored(ctx context.Context, authorID, databaseID int64, title, description, sql string, alsoTargets []int64) (int64, error) {
 	if err := s.requireWrite(); err != nil {
 		return 0, err
 	}
@@ -91,6 +91,12 @@ func (s *Scope) ProposeAuthored(ctx context.Context, authorID, databaseID int64,
 		       finished_at = NULL`,
 		id, fmt.Sprintf("derive:%d", id)); err != nil {
 		return 0, fmt.Errorf("queue the derivation: %w", err)
+	}
+
+	// The databases this change will reach, in promotion order. The one it was
+	// written for is always among them.
+	if err := s.setTargets(ctx, tx, id, databaseID, alsoTargets); err != nil {
+		return 0, err
 	}
 
 	if err := tx.Commit(ctx); err != nil {

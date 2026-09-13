@@ -375,6 +375,14 @@ func (s *Server) requestWrite(w http.ResponseWriter, r *http.Request) {
 			// is corrected rather than retyped.
 			"SQL": r.FormValue("sql"),
 		}
+		// The rest of the promotion chain above the chosen database, so the
+		// form can offer the pipeline rather than asking somebody to restate an
+		// order the Follows mapping already describes.
+		if id, perr := strconv.ParseInt(r.FormValue("database"), 10, 64); perr == nil {
+			if chain, cerr := scope.Chain(r.Context(), id); cerr == nil && len(chain) > 1 {
+				m["Chain"] = chain[1:]
+			}
+		}
 		if cause != nil {
 			m["Error"] = cause.Error()
 		}
@@ -397,9 +405,18 @@ func (s *Server) requestWrite(w http.ResponseWriter, r *http.Request) {
 			data(errors.New("choose the database this change is for")))
 		return
 	}
+	// The rest of the chain, as ticked. Anything unparseable is left out rather
+	// than refusing the form: a target that cannot be read is one the change
+	// does not reach, which is visible on the next page.
+	var also []int64
+	for _, v := range r.Form["target"] {
+		if id, perr := strconv.ParseInt(v, 10, 64); perr == nil {
+			also = append(also, id)
+		}
+	}
 	id, err := scope.ProposeAuthored(r.Context(), userFrom(r.Context()).ID, target,
 		strings.TrimSpace(r.FormValue("title")),
-		strings.TrimSpace(r.FormValue("description")), r.FormValue("sql"))
+		strings.TrimSpace(r.FormValue("description")), r.FormValue("sql"), also)
 	if err != nil {
 		s.render(w, r, "request_write", "Write a change", "requests", data(err))
 		return

@@ -117,6 +117,10 @@ type RequestDetail struct {
 	// (D-012).
 	Revert []RevertStep
 
+	// Targets are the databases this change reaches, in promotion order, and
+	// how far it has got along them.
+	Targets []RequestTarget
+
 	// ClosedAt and ClosedBy record who settled this request and when.
 	ClosedAt *time.Time
 	ClosedBy string
@@ -276,6 +280,9 @@ func (s *Scope) Request(ctx context.Context, id int64) (*RequestDetail, error) {
 		return nil, err
 	}
 	if d.Timeline, err = s.ActivityForRequest(ctx, id); err != nil {
+		return nil, err
+	}
+	if d.Targets, err = s.Targets(ctx, id); err != nil {
 		return nil, err
 	}
 	if d.MigrationID != 0 {
@@ -515,4 +522,18 @@ func (s *Scope) Executions(ctx context.Context, requestID int64) ([]*ExecutionVi
 		}
 	}
 	return views, events.Err()
+}
+
+// Pipeline reports that this change reaches more than one database.
+func (d *RequestDetail) Pipeline() bool { return len(d.Targets) > 1 }
+
+// NextTarget is the database a press of the execute button would run against,
+// or nil when every target has the change.
+func (d *RequestDetail) NextTarget() *RequestTarget {
+	for i := range d.Targets {
+		if !d.Targets[i].Reached {
+			return &d.Targets[i]
+		}
+	}
+	return nil
 }

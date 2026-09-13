@@ -7,17 +7,41 @@ becomes, and classifies what changed — so a written migration arrives in revie
 with its destructive statements marked exactly as a generated one does.</p>
 {{if .Error}}<p class="banner err">{{.Error}}</p>{{end}}
 
-<form method="post" action="/requests/write" class="card pad">
-  <input type="hidden" name="csrf" value="{{.CSRF}}">
-  <label>Title<input name="title" required placeholder="create the shipments table"></label>
+<form method="get" action="/requests/write" class="card pad" style="margin-bottom:14px">
   <label>Change this database
-    <select name="database" required>
+    <select name="database" onchange="this.form.submit()">
       <option value="">—</option>
       {{$t := $.Target}}
       {{range .Databases}}<option value="{{.ID}}" {{if eq (printf "%d" .ID) $t}}selected{{end}}>{{.Name}} · {{.Instance}}{{if .Environment}} · {{.Environment}}{{end}}</option>{{end}}
     </select>
-    <span class="hint">Only databases whose schema has been read are listed —
-    the copy is built from what was last observed.</span></label>
+    <span class="hint">Choosing one shows the databases that follow it, so the
+    change can be sent along the chain in one request.</span></label>
+  <noscript><button type="submit" class="secondary">Show the chain</button></noscript>
+</form>
+
+<form method="post" action="/requests/write" class="card pad">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <label>Title<input name="title" required placeholder="create the shipments table"></label>
+  <input type="hidden" name="database" value="{{.Target}}">
+  {{with .Chain}}
+  {{/* The order comes from the Follows mapping, so nobody restates it here.
+       Ticked by default because reaching production is what a pipeline is for;
+       untick to land the change in the lower environment only. */}}
+  <label>Then on
+    <span class="hint" style="margin-bottom:6px">These follow the database above,
+    so the same statements reach them in this order — each only once the one
+    before it has the change, and each rehearsed against its own schema
+    first.</span>
+    {{range .}}
+    <label style="display:block;margin:4px 0 0;color:var(--fg)">
+      <input type="checkbox" name="target" value="{{.DatabaseID}}" checked
+             style="display:inline;width:auto;margin-right:7px">
+      {{.Name}} <span class="fp">· {{.Instance}}{{if .Environment}} · {{.Environment}}{{end}}</span>
+    </label>
+    {{end}}
+  </label>
+  {{end}}
+
   <label>SQL
     <textarea name="sql" rows="12" spellcheck="false" class="script" required
       placeholder="CREATE TABLE public.shipments (&#10;  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,&#10;  carrier text NOT NULL&#10;);">{{.SQL}}</textarea>

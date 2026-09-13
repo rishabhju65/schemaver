@@ -35,15 +35,22 @@ func (s *Scope) EnqueueExecution(ctx context.Context, actorID, requestID int64) 
 		return fmt.Errorf("%w: %s", ErrNotExecutable, state.Reason)
 	}
 
+	// The next database in the chain that has not reached the migration's
+	// target yet. Worked out here rather than fixed when the request was
+	// opened, because the pipeline advances one target at a time and each press
+	// of the button means "the next one".
+	next, err := s.nextTarget(ctx, requestID, state.MigrationID)
+	if err != nil {
+		return err
+	}
+
 	var instanceID int64
 	var weight int
 	if err := s.store.pool.QueryRow(ctx, `
-		SELECT i.id, m.weight
-		  FROM schemaver.migration m
-		  JOIN schemaver.change_request r ON r.id = m.change_request_id
-		  JOIN schemaver.database d ON d.id = r.database_id
-		  JOIN schemaver.instance i ON i.id = d.instance_id
-		 WHERE m.id = $1`, state.MigrationID).Scan(&instanceID, &weight); err != nil {
+		SELECT d.instance_id, m.weight
+		  FROM schemaver.migration m, schemaver.database d
+		 WHERE m.id = $1 AND d.id = $2`,
+		state.MigrationID, next).Scan(&instanceID, &weight); err != nil {
 		return fmt.Errorf("load migration target: %w", err)
 	}
 
@@ -57,13 +64,19 @@ func (s *Scope) EnqueueExecution(ctx context.Context, actorID, requestID int64) 
 	// key is built here rather than concatenated in SQL: reusing one parameter
 	// as both a bigint and part of a string leaves Postgres unable to deduce a
 	// single type for it.
-	key := fmt.Sprintf("execute:%d", state.MigrationID)
+	// Keyed on the migration and the database, so pressing the button twice
+	// enqueues once — while the next target in the chain is a different piece
+	// of work and gets its own job. The key is built here rather than
+	// concatenated in SQL: reusing one parameter as both a bigint and part of a
+	// string leaves Postgres unable to deduce a single type for it.
+	key := fmt.Sprintf("execute:%d:%d", state.MigrationID, next)
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO schemaver.job
-		    (kind, target_kind, target_id, instance_id, weight, idempotency_key)
-		VALUES ('execute', 'migration', $1, $2, $3, $4)
+		    (kind, target_kind, target_id, database_id, instance_id, weight,
+		     idempotency_key)
+		VALUES ('execute', 'migration', $1, $5, $2, $3, $4)
 		ON CONFLICT (idempotency_key) DO NOTHING`,
-		state.MigrationID, instanceID, weight, key); err != nil {
+		state.MigrationID, instanceID, weight, key, next); err != nil {
 		return fmt.Errorf("enqueue execution: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `
@@ -78,6 +91,7 @@ func (s *Scope) EnqueueExecution(ctx context.Context, actorID, requestID int64) 
 	s.record(ctx, Info("execution.queued",
 		"queued for execution; a worker will claim it once the database still "+
 			"matches where this migration starts").
+		OnDatabase(next).
 		By(actorID).
 		OnRequest(requestID).
 		OnMigration(state.MigrationID).
@@ -114,7 +128,11 @@ type Execution struct {
 // Unscoped: the worker acts on behalf of every project, and a job it has already
 // claimed has been through the gate. Scoping here would mean the worker needed a
 // project identity it has no business holding.
-func (s *Store) LoadExecution(ctx context.Context, migrationID int64) (*Execution, error) {
+// LoadExecution assembles a run of one migration against one database.
+//
+// The database is named rather than resolved through the request, because a
+// request reaches several and the same migration runs against each in turn.
+func (s *Store) LoadExecution(ctx context.Context, migrationID, databaseID int64) (*Execution, error) {
 	var x Execution
 	var e endpoint
 	var kind, ref string
@@ -128,10 +146,12 @@ func (s *Store) LoadExecution(ctx context.Context, migrationID int64) (*Executio
 		       COALESCE(c.secret_ref, ''), COALESCE(c.secret_ciphertext, '\x'::bytea)
 		  FROM schemaver.migration m
 		  JOIN schemaver.change_request r ON r.id = m.change_request_id
-		  JOIN schemaver.database d ON d.id = r.database_id
+		  JOIN schemaver.change_request_target t
+		         ON t.change_request_id = r.id AND t.database_id = $2
+		  JOIN schemaver.database d ON d.id = t.database_id
 		  JOIN schemaver.instance i ON i.id = d.instance_id
 		  JOIN schemaver.credential c ON c.id = i.credential_id
-		 WHERE m.id = $1 AND m.superseded_at IS NULL`, migrationID).
+		 WHERE m.id = $1 AND m.superseded_at IS NULL`, migrationID, databaseID).
 		Scan(&x.MigrationID, &x.RequestID, &x.DatabaseID, &x.InstanceID, &x.ProjectID,
 			&x.DatabaseName,
 			&from, &to, &e.host, &e.port, &e.tlsMode, &e.username, &kind, &ref, &ciphertext)

@@ -124,7 +124,8 @@ anything said on this page are kept.</p>
   <form method="post" action="/requests/{{$r.ID}}/act" style="margin-top:12px">
     <input type="hidden" name="csrf" value="{{$.CSRF}}">
     <input type="hidden" name="do" value="execute">
-    <button type="submit" style="width:auto">Execute against {{$r.Database}}</button>
+    <button type="submit" style="width:auto">Execute against
+      {{with $r.NextTarget}}{{.Name}}{{else}}{{$r.Database}}{{end}}</button>
     <span class="hint">Queued and applied under an exclusive lock. The gate is
     checked again at that moment, and once more against the live schema before
     any statement runs.</span>
@@ -216,6 +217,25 @@ now, while the choice is still open — not when it is needed.</p>
   decisions, no comments{{if $r.Rollback}}, and the rollback above stops being
   offered — undoing it then means proposing the reverse as its own change{{end}}.
   Anything still queued is cancelled.</span>
+</div>
+{{end}}
+
+{{if $r.Pipeline}}
+{{/* One migration, several databases. The same statements run against each in
+     turn — D-024's gate holds each until the one below it has the change, and
+     each is rehearsed against its own schema before it runs. */}}
+<h2 style="margin-top:26px">Pipeline</h2>
+<p class="sub">The same statements reach each of these in order. Each waits for
+the one before it, and is rehearsed against its own schema first.</p>
+<div class="card">
+  {{range $r.Targets}}
+  <div class="change">
+    <span class="cls {{if .Reached}}additive{{else}}metadata_only{{end}}">
+      {{if .Reached}}done{{else}}waiting{{end}}</span>
+    <div>{{.Name}} <span class="fp">· {{.Instance}}{{if .Environment}} · {{.Environment}}{{end}}</span>
+      <br><span class="fp">{{if .Current}}at {{short .Current}}{{else}}never read{{end}}</span></div>
+  </div>
+  {{end}}
 </div>
 {{end}}
 

@@ -16,8 +16,8 @@ import (
 // must produce. The lock, the precondition and the verification are all wanted
 // here for the same reasons they are wanted going forward — more so, since this
 // runs after something has already gone wrong.
-func (w *Worker) rollback(ctx context.Context, migrationID int64) error {
-	x, err := w.store.LoadRollbackExecution(ctx, migrationID)
+func (w *Worker) rollback(ctx context.Context, migrationID, databaseID int64) error {
+	x, err := w.store.LoadRollbackExecution(ctx, migrationID, databaseID)
 	switch {
 	case errors.Is(err, store.ErrNothingToRollBack):
 		// The database moved back on its own, or somebody got there first.

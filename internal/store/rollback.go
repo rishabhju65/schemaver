@@ -136,8 +136,8 @@ func (s *Scope) EnqueueRollback(ctx context.Context, actorID, migrationID int64)
 // The same shape as a forward execution and run by the same code. A rollback is
 // not a special mode: it is a set of statements, a state they start from and a
 // state they must produce, which is what an execution has always been.
-func (s *Store) LoadRollbackExecution(ctx context.Context, migrationID int64) (*Execution, error) {
-	x, err := s.LoadExecution(ctx, migrationID)
+func (s *Store) LoadRollbackExecution(ctx context.Context, migrationID, databaseID int64) (*Execution, error) {
+	x, err := s.LoadExecution(ctx, migrationID, databaseID)
 	if err != nil {
 		return nil, err
 	}
