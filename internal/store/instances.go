@@ -52,6 +52,20 @@ func (s *Scope) Instances(ctx context.Context) ([]InstanceRow, error) {
 }
 
 // ManagedDatabase is one database on an instance, with how it is configured.
+// Maintenance reports the database every PostgreSQL installation creates for
+// itself.
+//
+// `initdb` makes one called postgres as a place to connect before any real
+// database exists, and it is also schemaver's own default for the database to
+// open first. It is almost never something to version-control, and it turns up
+// on servers whose console does not admit to it — a Neon project shows one
+// database in its dashboard and has two on the endpoint, because Neon creates
+// this one and does not surface it. Somebody who has just registered a server
+// then finds a database they are certain they did not create.
+//
+// A hint, not a restriction: it can still be managed by anyone who means to.
+func (d ManagedDatabase) Maintenance() bool { return d.Name == "postgres" }
+
 type ManagedDatabase struct {
 	ID   int64
 	Name string

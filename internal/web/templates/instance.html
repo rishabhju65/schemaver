@@ -22,7 +22,10 @@ observation cycle.</p>{{end}}
        its own action, on the fleet. */}}
   <td><input type="checkbox" name="managed" value="{{.ID}}" {{if .Managed}}checked{{end}}
       {{if or (not $.CanWrite) .Retired}}disabled{{end}}></td>
-  <td>{{.Name}}<input type="hidden" name="db" value="{{.ID}}"></td>
+  <td>{{.Name}}<input type="hidden" name="db" value="{{.ID}}">
+      {{if .Maintenance}}<br><span class="hint">the server's own maintenance
+      database, created by PostgreSQL rather than by you — usually not something
+      to manage</span>{{end}}</td>
   <td class="fp">{{mb .SizeBytes}}</td>
   <td>
     <select name="env-{{.ID}}" {{if not $.CanWrite}}disabled{{end}}>
