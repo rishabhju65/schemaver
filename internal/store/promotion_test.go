@@ -534,3 +534,110 @@ func TestANewProjectGetsTwoEnvironments(t *testing.T) {
 			ranks[0], ranks[1])
 	}
 }
+
+// TestEitherAnswerAboutReversibilityOpensTheGate covers the choice D-025 put in
+// place of a compulsory revert.
+//
+// The gate wants a decision, not a script. A change with a written way back and
+// a change declared irreversible both satisfy it; a change where nobody has
+// said either is refused, which is the state D-012 exists to prevent. The point
+// of allowing the second answer is that a revert written only because a gate
+// demanded one prevents nothing — it looks like a way back and is not one.
+func TestEitherAnswerAboutReversibilityOpensTheGate(t *testing.T) {
+	url := os.Getenv("SCHEMAVER_METADATA_URL")
+	if url == "" {
+		t.Skip("set SCHEMAVER_METADATA_URL to run the reversibility test")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	pool, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	st := store.New(pool, nil)
+
+	var projectID, userID, target, source int64
+	if err := pool.QueryRow(ctx, `
+		SELECT i.project_id,
+		       (SELECT m.user_id FROM schemaver.project_member m
+		         WHERE m.project_id = i.project_id AND m.role = 'admin' LIMIT 1),
+		       d.id, (SELECT id FROM schemaver.database WHERE name = 'shop_staging')
+		  FROM schemaver.database d
+		  JOIN schemaver.instance i ON i.id = d.instance_id
+		 WHERE d.name = 'shop_prod' AND d.current_fingerprint IS NOT NULL`).
+		Scan(&projectID, &userID, &target, &source); err != nil {
+		t.Skipf("no fixtures: %v", err)
+	}
+	scope := st.ForProject(projectID)
+
+	requestID, err := scope.Propose(ctx, userID, target, source, "reversibility probe", "")
+	if err != nil {
+		t.Skipf("nothing to migrate: %v", err)
+	}
+	t.Cleanup(func() {
+		pool.Exec(context.Background(),
+			`DELETE FROM schemaver.change_request WHERE id = $1`, requestID)
+	})
+	migrationID, err := scope.GenerateMigration(ctx, userID, requestID)
+	if err != nil {
+		t.Skipf("nothing to generate: %v", err)
+	}
+
+	// Neither answer given: refused, and the refusal asks for a decision rather
+	// than for a script.
+	state, err := scope.ApprovalState(ctx, requestID)
+	if err != nil {
+		t.Fatalf("ApprovalState: %v", err)
+	}
+	if state.Executable {
+		t.Error("executable with nobody having considered whether it can be undone")
+	}
+	if !strings.Contains(state.Reason, "undone") {
+		t.Errorf("the refusal does not ask about reversibility: %s", state.Reason)
+	}
+
+	// An empty reason is not a decision.
+	if err := scope.DeclareIrreversible(ctx, userID, migrationID, "   "); err == nil {
+		t.Error("an empty reason was accepted; a reviewer agreeing to this needs " +
+			"to know what they are agreeing to")
+	}
+
+	// Declaring it satisfies the gate.
+	if err := scope.DeclareIrreversible(ctx, userID, migrationID,
+		"drops the column and its contents; no DDL restores them"); err != nil {
+		t.Fatalf("DeclareIrreversible: %v", err)
+	}
+	declared, err := scope.ApprovalState(ctx, requestID)
+	if err != nil {
+		t.Fatalf("ApprovalState after declaring: %v", err)
+	}
+	if declared.NoRevertReason == "" {
+		t.Error("the declaration was not recorded")
+	}
+	if strings.Contains(declared.Reason, "undone") {
+		t.Errorf("still asking about reversibility after it was settled: %s",
+			declared.Reason)
+	}
+
+	// Writing one afterwards answers the other way, and the two must not both
+	// stand: a script beside "there is no way back" is one somebody might run.
+	if err := scope.WriteRevert(ctx, userID, migrationID,
+		"ALTER TABLE public.orders DROP COLUMN channel;"); err != nil {
+		t.Fatalf("WriteRevert after declaring: %v", err)
+	}
+	var reason *string
+	var authored *time.Time
+	if err := pool.QueryRow(ctx, `
+		SELECT no_revert_reason, revert_authored_at FROM schemaver.migration
+		 WHERE id = $1`, migrationID).Scan(&reason, &authored); err != nil {
+		t.Fatalf("read the migration back: %v", err)
+	}
+	if reason != nil {
+		t.Error("a declaration of irreversibility survived beside a written revert")
+	}
+	if authored == nil {
+		t.Error("the written revert was not recorded")
+	}
+}

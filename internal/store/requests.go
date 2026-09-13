@@ -112,6 +112,10 @@ type RequestDetail struct {
 	// (D-012).
 	Revert []RevertStep
 
+	// NoRevertReason is why this change cannot be undone, where somebody said so
+	// instead of writing a revert.
+	NoRevertReason string
+
 	// AuthoredSQL is the script somebody wrote, where the change was written
 	// rather than derived from another database. Kept so it can be corrected:
 	// a script that would not apply produces no migration and therefore no
@@ -183,7 +187,7 @@ func (s *Scope) Request(ctx context.Context, id int64) (*RequestDetail, error) {
 		       m.irreversible_reason,
 		       COALESCE(m.changes, '[]'::jsonb),
 		       COALESCE(NULLIF(m.rename_candidates, 'null'::jsonb), '[]'::jsonb),
-		       COALESCE(r.authored_sql, '')
+		       COALESCE(r.authored_sql, ''), COALESCE(m.no_revert_reason, '')
 		  FROM schemaver.change_request r
 		  JOIN schemaver.database db ON db.id = r.database_id
 		  LEFT JOIN schemaver.database src ON src.id = r.source_database_id
@@ -194,7 +198,7 @@ func (s *Scope) Request(ctx context.Context, id int64) (*RequestDetail, error) {
 		Scan(&d.ID, &d.Title, &d.Description, &d.State, &d.StateReason, &d.Author,
 			&d.Database, &d.Source, &d.CreatedAt,
 			&migrationID, &from, &to, &generatedAt, &irreversible,
-			&changesJSON, &renamesJSON, &d.AuthoredSQL)
+			&changesJSON, &renamesJSON, &d.AuthoredSQL, &d.NoRevertReason)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, errors.New("no such change request")
 	}

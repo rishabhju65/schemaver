@@ -57,7 +57,8 @@ anything said on this page are kept.</p>
   <div class="gates">
     <span class="added">✓ generated · {{len $r.Steps}} statement(s)</span>
     {{if .RevertWritten}}<span class="added">✓ a way back is written</span>
-    {{else}}<span class="removed">✗ no way back written</span>{{end}}
+    {{else if .NoRevertReason}}<span class="modified">✓ declared irreversible</span>
+    {{else}}<span class="removed">✗ nobody has said whether this can be undone</span>{{end}}
     {{if eq .ProofState "passed"}}<span class="added">✓ rehearsed on a throwaway copy</span>
     {{else if eq .ProofState "pending"}}<span class="modified">○ rehearsing…</span>
     {{else if eq .ProofState "failed"}}<span class="removed">✗ failed its proof</span>
@@ -238,14 +239,27 @@ exactly as it was reviewed. schemaver runs it only if you ask.</p>
      backfill and said nothing about it. Whoever writes the change writes the
      way back. */}}
 <h2 style="margin-top:26px">The way back</h2>
+{{if $r.NoRevertReason}}
+{{/* A stated reason, not a missing script. A reviewer approving this is
+     agreeing there is no way back, which is the choice D-012 wanted somebody to
+     make while they still could. */}}
+<p class="banner err">
+  <b>This change cannot be undone.</b><br>
+  {{$r.NoRevertReason}}<br>
+  <span class="fp">Approving it means accepting that. If the change turns out to
+  be wrong, the only recovery is a backup, which is outside this product.</span>
+</p>
+{{end}}
 {{if $r.HasRevert}}
 <p class="sub">Written by hand and reviewed alongside the migration. schemaver
 proves it returns the schema to where it started, and runs it only if you ask.</p>
-{{else}}
-<p class="banner err">
-  <b>No way back has been written.</b>
-  A migration cannot be approved without one. Write the statements that undo it —
-  including anything the data needs, which no diff of two schemas could work out.
+{{else if not $r.NoRevertReason}}
+<p class="banner warn">
+  <b>Nobody has said whether this can be undone.</b>
+  Write the statements that undo it — including anything the data needs, which
+  no diff of two schemas could work out — or say below why there is no way back.
+  One of the two, because a change that runs without anybody having considered
+  this is what the gate exists to prevent.
 </p>
 {{end}}
 
@@ -277,6 +291,21 @@ proves it returns the schema to where it started, and runs it only if you ask.</
       rehearsed.</span>
     </p>
   </form>
+
+  {{if not $r.HasRevert}}
+  <form method="post" action="/requests/{{$r.ID}}/irreversible" style="margin-top:18px">
+    <input type="hidden" name="csrf" value="{{$.CSRF}}">
+    <label style="color:var(--dim);font-size:13px">Or: this cannot be undone, because
+      <input name="reason" placeholder="drops the column and its contents; no DDL restores them">
+    </label>
+    <p style="margin-top:8px">
+      <button type="submit" class="secondary" style="width:auto">Declare it irreversible</button>
+      <span class="hint">An honest answer, and a better one than a revert
+      written to satisfy a gate. It is shown to every reviewer, and recorded
+      against the approval.</span>
+    </p>
+  </form>
+  {{end}}
   {{end}}
 </div>
 

@@ -445,3 +445,37 @@ func (s *Server) revise(w http.ResponseWriter, r *http.Request) {
 	}
 	http.Redirect(w, r, back, http.StatusSeeOther)
 }
+
+// declareIrreversible records that a change has no way back, and why.
+func (s *Server) declareIrreversible(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "not a request id", http.StatusBadRequest)
+		return
+	}
+	if !checkCSRF(r) {
+		http.Error(w, "invalid form token; reload the page and try again",
+			http.StatusForbidden)
+		return
+	}
+	scope, serr := s.scoped(r)
+	if serr != nil {
+		http.Error(w, serr.Error(), http.StatusInternalServerError)
+		return
+	}
+	back := "/requests/" + strconv.FormatInt(id, 10)
+
+	detail, derr := scope.Request(r.Context(), id)
+	if derr != nil || detail.MigrationID == 0 {
+		http.Redirect(w, r, back+"?error="+url.QueryEscape("no migration to declare"),
+			http.StatusSeeOther)
+		return
+	}
+	if err := scope.DeclareIrreversible(r.Context(), userFrom(r.Context()).ID,
+		detail.MigrationID, r.FormValue("reason")); err != nil {
+		http.Redirect(w, r, back+"?error="+url.QueryEscape(err.Error()),
+			http.StatusSeeOther)
+		return
+	}
+	http.Redirect(w, r, back, http.StatusSeeOther)
+}

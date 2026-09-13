@@ -79,6 +79,10 @@ type ApprovalState struct {
 	// generates one any more (D-022), so its absence is a person's omission
 	// rather than a limit of the engine.
 	RevertWritten bool
+	// NoRevertReason is why this change cannot be undone, where somebody has
+	// said so instead of writing a revert. Exactly one of the two is required:
+	// the gate wants a decision about reversibility, not a script (D-025).
+	NoRevertReason string
 
 	// PromotionSource names the database a change passes through before this
 	// one, or is empty where nothing precedes it. PromotionReached reports that
@@ -122,7 +126,7 @@ func (s *Scope) ApprovalState(ctx context.Context, requestID int64) (*ApprovalSt
 		       r.author_id, r.project_id,
 		       m.proof_state, COALESCE(m.proof_reason, ''), m.plan_digest,
 		       m.revert_proof_state, COALESCE(m.revert_proof_reason, ''),
-		       m.revert_authored_at IS NOT NULL,
+		       m.revert_authored_at IS NOT NULL, COALESCE(m.no_revert_reason, ''),
 		       COALESCE(peer.name, ''),
 		       COALESCE(peer.current_fingerprint, '') = m.to_fingerprint,
 		       COALESCE(peer.current_fingerprint, '')
@@ -138,7 +142,7 @@ func (s *Scope) ApprovalState(ctx context.Context, requestID int64) (*ApprovalSt
 		Scan(&st.MigrationID, &st.FromFingerprint, &st.ToFingerprint,
 			&renames, &authorID, &projectID, &st.ProofState, &st.ProofReason,
 			&st.PlanDigest, &st.RevertProofState, &st.RevertProofReason,
-			&st.RevertWritten, &st.PromotionSource, &st.PromotionReached,
+			&st.RevertWritten, &st.NoRevertReason, &st.PromotionSource, &st.PromotionReached,
 			&st.PromotionAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNoMigration
@@ -207,12 +211,17 @@ func (s *Scope) ApprovalState(ctx context.Context, requestID int64) (*ApprovalSt
 // evaluate applies the gate, in the order a reader would ask the questions.
 func (st *ApprovalState) evaluate() (bool, string) {
 	switch {
-	case !st.RevertWritten:
-		// Checked before the proof, because this is the author's to fix and the
-		// proof is the machine's. Telling somebody to wait for a check that
+	case !st.RevertWritten && st.NoRevertReason == "":
+		// Checked before the proof, because this is the author's to settle and
+		// the proof is the machine's. Telling somebody to wait for a check that
 		// cannot pass is worse than telling them what is missing.
-		return false, "no way back has been written for this migration; whoever " +
-			"wrote the change writes the revert, and a reviewer reads both"
+		//
+		// Either answer satisfies this. What is refused is neither: a change
+		// that runs without anybody having considered whether it can be undone
+		// is the state D-012 exists to prevent, and a revert written only
+		// because a gate demanded one prevents it no better (D-025).
+		return false, "nobody has said whether this can be undone; write the way " +
+			"back, or say why there is not one"
 	case st.ProofState == "pending":
 		return false, "this migration has not finished being proven against a " +
 			"throwaway copy of the database yet"

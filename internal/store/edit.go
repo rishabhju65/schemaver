@@ -269,7 +269,11 @@ func (s *Scope) WriteRevert(ctx context.Context, actorID, migrationID int64, sql
 		       proof_state = 'pending', proof_reason = NULL, proved_at = NULL,
 		       revert_proof_state = 'pending', revert_proof_reason = NULL,
 		       revert_authored_at = CASE WHEN $3 THEN now() END,
-		       revert_author_id = CASE WHEN $3 THEN $4::bigint END
+		       revert_author_id = CASE WHEN $3 THEN $4::bigint END,
+		       -- Writing one answers the question the other way, and holding
+		       -- both is forbidden: a script beside "there is no way back" is
+		       -- one somebody might run.
+		       no_revert_reason = NULL, no_revert_by = NULL, no_revert_at = NULL
 		 WHERE id = $1`, migrationID, digest, authored, actorID); err != nil {
 		return fmt.Errorf("record the revert: %w", err)
 	}
@@ -283,6 +287,103 @@ func (s *Scope) WriteRevert(ctx context.Context, actorID, migrationID int64, sql
 	}
 	s.record(ctx, Warn("revert.written", what+
 		"; approvals withdrawn and the migration must be proven again").
+		By(actorID).
+		OnRequest(requestID).
+		OnMigration(migrationID))
+	return nil
+}
+
+// DeclareIrreversible records that a change cannot be undone, and why.
+//
+// The alternative to writing a revert rather than a way of skipping it. One of
+// the two is required, because the point of D-012 was that somebody confronts
+// reversibility while they can still choose differently — and "this destroys
+// the column's contents and no DDL brings them back" is a better answer to that
+// than an ADD COLUMN written to satisfy a gate.
+//
+// The reason is shown wherever the way back would have been, so a reviewer
+// approves knowing there is none rather than discovering it during an incident.
+func (s *Scope) DeclareIrreversible(ctx context.Context, actorID, migrationID int64, reason string) error {
+	if err := s.requireWrite(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(reason) == "" {
+		return errors.New(
+			"say why this cannot be undone; a reviewer approving it is agreeing " +
+				"to that, and needs to know what they are agreeing to")
+	}
+
+	var projectID, requestID int64
+	var state string
+	if err := s.store.pool.QueryRow(ctx, `
+		SELECT r.project_id, r.id, r.state
+		  FROM schemaver.migration m
+		  JOIN schemaver.change_request r ON r.id = m.change_request_id
+		 WHERE m.id = $1 AND r.project_id = ANY($2) AND m.superseded_at IS NULL`,
+		migrationID, s.projects).Scan(&projectID, &requestID, &state); err != nil {
+		return fmt.Errorf("load migration: %w", err)
+	}
+	switch state {
+	case "READY_TO_EXECUTE", "EXECUTING", "COMPLETED", "CLOSED", "NEEDS_ATTENTION":
+		return ErrNotEditable
+	}
+
+	tx, err := s.store.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Any revert already written is removed rather than left beside the
+	// declaration. The constraint forbids holding both, and more to the point a
+	// statement kept next to "there is no way back" is one somebody might run.
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM schemaver.migration_revert_step WHERE migration_id = $1`,
+		migrationID); err != nil {
+		return fmt.Errorf("clear the previous revert: %w", err)
+	}
+
+	digest, err := recomputeDigest(ctx, tx, migrationID)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE schemaver.migration
+		   SET no_revert_reason = $2, no_revert_by = $3, no_revert_at = now(),
+		       revert_authored_at = NULL, revert_author_id = NULL,
+		       revert_proof_state = 'unproven',
+		       revert_proof_reason = 'declared irreversible; there is nothing to prove',
+		       plan_digest = $4,
+		       proof_state = 'pending', proof_reason = NULL, proved_at = NULL
+		 WHERE id = $1`, migrationID, reason, actorID, digest); err != nil {
+		return fmt.Errorf("record the declaration: %w", err)
+	}
+
+	// Like every other change to the plan, this withdraws approvals: somebody
+	// who approved a migration that had a way back did not approve this one.
+	if _, err := tx.Exec(ctx, `
+		UPDATE schemaver.change_request
+		   SET state = 'STAGE_SANITY',
+		       state_reason = 'declared irreversible; proving the migration again',
+		       updated_at = now()
+		 WHERE id = $1`, requestID); err != nil {
+		return fmt.Errorf("advance request: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO schemaver.job
+		    (kind, target_kind, target_id, weight, idempotency_key)
+		VALUES ('prove', 'migration', $1, 1, $2)
+		ON CONFLICT (idempotency_key) DO UPDATE
+		   SET state = 'pending', run_after = now(), error = NULL, finished_at = NULL`,
+		migrationID, fmt.Sprintf("prove:%d", migrationID)); err != nil {
+		return fmt.Errorf("re-queue the proof: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+
+	s.record(ctx, Warn("revert.declined",
+		"declared irreversible: "+reason).
 		By(actorID).
 		OnRequest(requestID).
 		OnMigration(migrationID))
