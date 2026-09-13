@@ -23,7 +23,22 @@ func (r Result) Empty() bool { return len(r.Changes) == 0 }
 //
 // Both sides are normalized first, so a difference here is a real difference and
 // never an artifact of how either schema was read or assembled.
-func Compute(from, to *schema.Schema) Result {
+func Compute(from, to *schema.Schema) Result { return ComputeWith(from, to, nil) }
+
+// ComputeWith diffs two schemas, treating the given renames as settled.
+//
+// A rename and a drop-plus-add are indistinguishable from the schemas, and not
+// remotely equivalent — one keeps the data and the other destroys it — so the
+// engine never decides. It proposes candidates and somebody answers. This is
+// where an answer of "yes, renamed" takes effect: the drop and the add collapse
+// into a single rename, plus whatever else about the column actually changed,
+// since confirming a rename says nothing about the column's type or nullability
+// having stayed the same.
+//
+// Both schemas are unchanged either way: a rename produces the same end state
+// as the drop-and-add it replaces, which is why the migration's declared target
+// does not move and the rehearsal is unaffected.
+func ComputeWith(from, to *schema.Schema, confirmed []Rename) Result {
 	a, b := normalized(from), normalized(to)
 
 	var changes []Change
@@ -36,7 +51,7 @@ func Compute(from, to *schema.Schema) Result {
 		}
 		changes = append(changes, enumChanges(name, ns, other)...)
 		changes = append(changes, sequenceChanges(name, ns, other)...)
-		changes = append(changes, tableChanges(name, ns, other)...)
+		changes = append(changes, tableChanges(name, ns, other, confirmed)...)
 	}
 
 	ordered := Order(changes)
@@ -223,7 +238,7 @@ func sequenceChanges(ns string, a, b *schema.Namespace) []Change {
 	return out
 }
 
-func tableChanges(ns string, a, b *schema.Namespace) []Change {
+func tableChanges(ns string, a, b *schema.Namespace, confirmed []Rename) []Change {
 	before := map[string]schema.Table{}
 	for _, t := range a.Tables {
 		before[t.Name] = t
@@ -246,7 +261,7 @@ func tableChanges(ns string, a, b *schema.Namespace) []Change {
 			out = append(out, tableCreation(ns, t)...)
 			continue
 		}
-		out = append(out, columnChanges(ns, name, old, t)...)
+		out = append(out, columnChanges(ns, name, old, t, confirmed)...)
 		out = append(out, constraintChanges(ns, name, old, t)...)
 		out = append(out, indexChanges(ns, name, old, t)...)
 		if old.Comment != t.Comment {
@@ -259,7 +274,7 @@ func tableChanges(ns string, a, b *schema.Namespace) []Change {
 	return out
 }
 
-func columnChanges(ns, table string, a, b schema.Table) []Change {
+func columnChanges(ns, table string, a, b schema.Table, confirmed []Rename) []Change {
 	before := map[string]schema.Column{}
 	for _, c := range a.Columns {
 		before[c.Name] = c
@@ -269,8 +284,44 @@ func columnChanges(ns, table string, a, b schema.Table) []Change {
 		after[c.Name] = c
 	}
 
+	// Renames confirmed for this table, read both ways: by the name going and
+	// by the name arriving, because the drop and the add are found in separate
+	// passes below and each has to know it is half of one.
+	renamedFrom := map[string]string{}
+	renamedTo := map[string]string{}
+	for _, r := range confirmed {
+		if r.Namespace != ns || r.Table != table {
+			continue
+		}
+		// Only where the schemas still support it. An answer kept from before
+		// they moved must not rename a column that is not there, or into a name
+		// that no longer appears.
+		//
+		// Deliberately not also requiring the old name to be gone from the
+		// target. "Rename note to remark, and add a new note" is a real thing
+		// to do, and it is the case where honouring the answer matters most:
+		// refusing here would turn it back into the drop-and-add that discards
+		// the data, which is exactly what the answer was given to prevent.
+		if _, present := before[r.From]; !present {
+			continue
+		}
+		if _, arrived := after[r.To]; !arrived {
+			continue
+		}
+		renamedFrom[r.From] = r.To
+		renamedTo[r.To] = r.From
+	}
+
 	var out []Change
 	for name := range before {
+		if to, renamed := renamedFrom[name]; renamed {
+			c := newChange(RenameColumn, ns, table, name,
+				fmt.Sprintf("rename %s.%s.%s to %s, keeping its data", ns, table, name, to))
+			c.From, c.To = name, to
+			c.typeHint = before[name].Type
+			out = append(out, c)
+			continue
+		}
 		if _, ok := after[name]; !ok {
 			c := newChange(DropColumn, ns, table, name,
 				fmt.Sprintf("drop column %s from %s.%s, discarding its data", name, ns, table))
@@ -279,7 +330,24 @@ func columnChanges(ns, table string, a, b schema.Table) []Change {
 		}
 	}
 	for name, col := range after {
+		if from, renamed := renamedTo[name]; renamed {
+			// The rename itself is emitted above. What is left is whatever else
+			// about the column differs — a widened type, a dropped default —
+			// which a rename does not carry and which would otherwise be lost
+			// with the add that used to describe it.
+			was := before[from]
+			was.Name = name
+			out = append(out, alteredColumn(ns, table, was, col)...)
+			continue
+		}
 		old, ok := before[name]
+		// A name a rename has vacated is free, so whatever arrives at it is a
+		// new column rather than an alteration of the one that left. Read the
+		// other way round it would describe changing a column that is no longer
+		// there under that name.
+		if _, vacated := renamedFrom[name]; vacated {
+			ok = false
+		}
 		if !ok {
 			c := newChange(AddColumn, ns, table, name,
 				fmt.Sprintf("add column %s %s to %s.%s", name, col.Type, ns, table))

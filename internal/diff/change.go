@@ -34,6 +34,7 @@ const (
 	DropTable   Kind = "drop_table"
 
 	AddColumn        Kind = "add_column"
+	RenameColumn     Kind = "rename_column"
 	DropColumn       Kind = "drop_column"
 	AlterColumnType  Kind = "alter_column_type"
 	SetNotNull       Kind = "set_not_null"
@@ -157,6 +158,12 @@ func classOf(k Kind) Class {
 	case CreateTable, CreateNamespace, CreateEnum, CreateSequence,
 		AddColumn, AddEnumLabel:
 		return Additive
+
+	case RenameColumn:
+		// The catalogue entry is relabelled and not a row is touched, which is
+		// the entire reason for confirming one rather than running the
+		// drop-and-add it would otherwise be read as.
+		return MetadataOnly
 
 	case DropConstraint, DropIndex, DropNotNull, SetDefault, DropDefault,
 		SetComment, AlterSequence, AlterEnum, AlterColumnOther:

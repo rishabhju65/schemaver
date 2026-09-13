@@ -39,6 +39,19 @@ type RenameCandidate struct {
 	Question string `json:"question"`
 }
 
+// Rename is a candidate somebody has confirmed: this column became that one.
+//
+// Deliberately just the four names. It is a statement about intent, not about
+// the column's shape, so it stays true across a regeneration that changed the
+// type or the default — and ComputeWith re-checks against the schemas anyway
+// before acting on it.
+type Rename struct {
+	Namespace string `json:"namespace"`
+	Table     string `json:"table"`
+	From      string `json:"from"`
+	To        string `json:"to"`
+}
+
 // findRenames proposes renames from the drop and add columns in a change set.
 func findRenames(changes []Change) []RenameCandidate {
 	type tableKey struct{ ns, table string }

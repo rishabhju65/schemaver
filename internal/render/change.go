@@ -190,6 +190,12 @@ func statementsFor(c diff.Change, before, after objects) []Statement {
 		return one(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s;", table, columnDDL(col)))
 	case diff.DropColumn:
 		return one(fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s;", table, ident(c.Object)))
+	case diff.RenameColumn:
+		// The whole point of confirming a rename: one catalogue entry is
+		// relabelled and the data stays where it is, instead of a DROP that
+		// discards it and an ADD that produces an empty column.
+		return one(fmt.Sprintf("ALTER TABLE %s RENAME COLUMN %s TO %s;",
+			table, ident(c.From), ident(c.To)))
 
 	case diff.AlterColumnType:
 		s := one(fmt.Sprintf("ALTER TABLE %s ALTER COLUMN %s TYPE %s;",

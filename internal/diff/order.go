@@ -27,6 +27,11 @@ const (
 	phaseCreateNamespace
 	phaseCreateType // enums and sequences, before the columns that need them
 	phaseCreateTable
+	// Before columns are added, and after they are dropped. Both orderings
+	// matter: renaming a to b while adding a new a would rename the wrong
+	// column if the add came first, and renaming a to b while dropping the old
+	// b would collide if the drop came second.
+	phaseRenameColumn
 	phaseAddColumn
 	phaseAlterColumn
 	// Constraining a column comes after any default or backfill that makes the
@@ -58,6 +63,8 @@ func phaseOf(k Kind) int {
 		return phaseCreateType
 	case CreateTable:
 		return phaseCreateTable
+	case RenameColumn:
+		return phaseRenameColumn
 	case AddColumn:
 		return phaseAddColumn
 	case AlterColumnType, SetDefault, DropDefault, DropNotNull, AlterColumnOther:
