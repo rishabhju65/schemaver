@@ -1,0 +1,36 @@
+{{define "content"}}
+<div class="narrow" style="max-width:760px">
+<h1>Write a change</h1>
+<p class="sub">The SQL that makes the change you want. schemaver applies it to a
+throwaway copy of the database built at its current schema, works out what it
+becomes, and classifies what changed — so a written migration arrives in review
+with its destructive statements marked exactly as a generated one does.</p>
+{{if .Error}}<p class="banner err">{{.Error}}</p>{{end}}
+
+<form method="post" action="/requests/write" class="card pad">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <label>Title<input name="title" required placeholder="create the shipments table"></label>
+  <label>Change this database
+    <select name="database" required>
+      <option value="">—</option>
+      {{$t := $.Target}}
+      {{range .Databases}}<option value="{{.ID}}" {{if eq (printf "%d" .ID) $t}}selected{{end}}>{{.Name}} · {{.Instance}}{{if .Environment}} · {{.Environment}}{{end}}</option>{{end}}
+    </select>
+    <span class="hint">Only databases whose schema has been read are listed —
+    the copy is built from what was last observed.</span></label>
+  <label>SQL
+    <textarea name="sql" rows="12" spellcheck="false" class="script" required
+      placeholder="CREATE TABLE public.shipments (&#10;  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,&#10;  carrier text NOT NULL&#10;);">{{.SQL}}</textarea>
+    <span class="hint">One script; statements are split on semicolons, and
+    semicolons inside strings, comments and function bodies are left alone.
+    Anything that will not apply is reported against the copy, before anybody is
+    asked to read it.</span></label>
+  <label>Why<textarea name="description" rows="3"
+    style="display:block;width:100%;margin-top:5px;padding:8px 10px;font:inherit;
+    background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:6px"></textarea></label>
+  <button type="submit">Write and work out what it does</button>
+  <p class="hint" style="margin-top:12px">You will still need to write the way
+  back before this can be approved, and it is rehearsed before it can run.</p>
+</form>
+</div>
+{{end}}

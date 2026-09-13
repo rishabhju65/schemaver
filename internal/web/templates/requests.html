@@ -2,7 +2,10 @@
 <h1>Changes</h1>
 <p class="sub">Proposed schema changes. A change is executable once a project
 administrator has approved it and no question is outstanding.</p>
-{{if .CanWrite}}<p><a class="btn" href="/requests/new">Propose a change</a></p>{{end}}
+{{if .CanWrite}}<p><a class="btn" href="/requests/new">Propose a change</a>
+<a class="btn secondary" href="/requests/write">Write a change</a>
+<span class="hint">Propose brings one database in line with another; write it
+when the change exists nowhere yet.</span></p>{{end}}
 <div class="card scroll">
 <table>
 <tr><th>#</th><th>Change</th><th>Database</th><th>State</th>

@@ -324,3 +324,62 @@ func (s *Server) writeRevert(w http.ResponseWriter, r *http.Request) {
 	}
 	http.Redirect(w, r, back, http.StatusSeeOther)
 }
+
+// requestWrite opens a change request for SQL somebody wrote, rather than for a
+// difference between two databases.
+//
+// The other path can only express changes that already exist somewhere: it
+// diffs two schemas, so a table nobody has created yet appears in neither.
+// Making one used to mean creating it by hand in some database first, outside
+// schemaver and unreviewed, so the first application of every new change
+// escaped the review this product exists to provide.
+func (s *Server) requestWrite(w http.ResponseWriter, r *http.Request) {
+	scope, serr := s.scoped(r)
+	if serr != nil {
+		http.Error(w, serr.Error(), http.StatusInternalServerError)
+		return
+	}
+	candidates, err := scope.Candidates(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	data := func(cause error) map[string]any {
+		m := map[string]any{
+			"Databases": candidates,
+			"Target":    r.FormValue("database"),
+			// Returned as written when something is wrong, so a rejected script
+			// is corrected rather than retyped.
+			"SQL": r.FormValue("sql"),
+		}
+		if cause != nil {
+			m["Error"] = cause.Error()
+		}
+		return m
+	}
+
+	if r.Method == http.MethodGet {
+		s.render(w, r, "request_write", "Write a change", "requests", data(nil))
+		return
+	}
+	if !checkCSRF(r) {
+		http.Error(w, "invalid form token; reload the page and try again",
+			http.StatusForbidden)
+		return
+	}
+
+	target, terr := strconv.ParseInt(r.FormValue("database"), 10, 64)
+	if terr != nil {
+		s.render(w, r, "request_write", "Write a change", "requests",
+			data(errors.New("choose the database this change is for")))
+		return
+	}
+	id, err := scope.ProposeAuthored(r.Context(), userFrom(r.Context()).ID, target,
+		strings.TrimSpace(r.FormValue("title")),
+		strings.TrimSpace(r.FormValue("description")), r.FormValue("sql"))
+	if err != nil {
+		s.render(w, r, "request_write", "Write a change", "requests", data(err))
+		return
+	}
+	http.Redirect(w, r, "/requests/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
+}
