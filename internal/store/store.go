@@ -169,9 +169,24 @@ func (s *Store) SyncDatabases(ctx context.Context, instanceID int64, found []int
 		names[i] = db.Name
 		var inserted bool
 		if err := tx.QueryRow(ctx, `
+			-- Labelled as the most guarded environment the project has, which
+			-- is the highest-ranked one. Discovery cannot know what a database
+			-- is for, and of the two ways to be wrong only one is dangerous:
+			-- calling staging production costs ceremony somebody removes,
+			-- while calling production staging lets a change reach it without
+			-- passing through anything (D-024).
+			--
+			-- Read by rank rather than by the name "production", because rank
+			-- is what the checks compare and a project may rename its
+			-- environments.
 			INSERT INTO schemaver.database
-			    (instance_id, name, owner, encoding, size_bytes, last_seen)
-			VALUES ($1, $2, $3, $4, $5, now())
+			    (instance_id, name, owner, encoding, size_bytes, last_seen,
+			     environment_id)
+			VALUES ($1, $2, $3, $4, $5, now(), (
+			    SELECT e.id FROM schemaver.environment e
+			      JOIN schemaver.instance i ON i.id = $1
+			     WHERE e.project_id = i.project_id
+			     ORDER BY e.rank DESC LIMIT 1))
 			ON CONFLICT (instance_id, name) DO UPDATE
 			   SET owner = EXCLUDED.owner,
 			       encoding = EXCLUDED.encoding,
