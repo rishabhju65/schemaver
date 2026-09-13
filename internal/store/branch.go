@@ -448,8 +448,17 @@ func (s *Store) RecordBranchWrite(ctx context.Context, t *BranchWriteTask, to sc
 
 // BranchMerge is what merging a branch into a database would do.
 type BranchMerge struct {
-	Branch   *Branch
-	Database string
+	Branch     *Branch
+	Database   string
+	DatabaseID int64
+
+	// From is where the database is now, read once when the merge was planned
+	// and used for both ends of the migration: the statements are rendered
+	// against it and it is the fingerprint the migration declares it starts
+	// from. Reading it twice would let the two disagree if the database were
+	// observed in between.
+	From    schema.Version
+	Current *schema.Schema
 
 	// Ours is what the database has done since the branch was cut; Theirs is
 	// what the branch did. Where only the branch moved this is an ordinary
@@ -461,6 +470,11 @@ type BranchMerge struct {
 	Target    schema.Version
 	Apply     []diff.Change
 	Conflicts []diff.Conflict
+
+	// Renames are the drop-and-add pairs in Apply that may each be one column
+	// renamed. Proposed, never applied: from the schemas alone the two are
+	// indistinguishable and only one of them keeps the data.
+	Renames []diff.RenameCandidate
 }
 
 // Clean reports a merge with nothing to resolve by hand.
@@ -511,7 +525,8 @@ func (s *Scope) PlanBranchMerge(ctx context.Context, branchID, databaseID int64)
 	}
 
 	m := &BranchMerge{
-		Branch: b, Database: name,
+		Branch: b, Database: name, DatabaseID: databaseID,
+		From: schema.Version(*current), Current: ours,
 		Ours:   diff.Compute(base, ours).Changes,
 		Theirs: diff.Compute(base, theirs).Changes,
 	}
@@ -526,7 +541,8 @@ func (s *Scope) PlanBranchMerge(ctx context.Context, branchID, databaseID int64)
 		return nil, fmt.Errorf("fingerprint the merged schema: %w", err)
 	}
 	m.Result, m.Target = merged.Schema, fingerprint
-	m.Apply = diff.Compute(ours, merged.Schema).Changes
+	applied := diff.Compute(ours, merged.Schema)
+	m.Apply, m.Renames = applied.Changes, applied.Renames
 	return m, nil
 }
 
@@ -571,19 +587,6 @@ func (s *Scope) MergeBranch(ctx context.Context, actorID, branchID, databaseID i
 			m.Database)
 	}
 
-	// Where the database is now is read once and used for both ends of the
-	// migration: the statements are rendered against it, and it is the
-	// fingerprint the migration declares it starts from. Reading it twice would
-	// let the two disagree if the database were observed in between.
-	fromVersion := s.currentOf(ctx, databaseID)
-	current, err := s.Blob(ctx, fromVersion)
-	if err != nil {
-		return 0, err
-	}
-	if err := s.store.StoreSchema(ctx, m.Result, m.Target); err != nil {
-		return 0, err
-	}
-
 	if strings.TrimSpace(title) == "" {
 		title = "Merge " + m.Branch.Name + " into " + m.Database
 	}
@@ -611,8 +614,47 @@ func (s *Scope) MergeBranch(ctx context.Context, actorID, branchID, databaseID i
 		return 0, fmt.Errorf("commit: %w", err)
 	}
 
-	result := diff.Result{Changes: m.Apply, Summary: diff.Count(m.Apply)}
-	result.Changes = diff.Order(result.Changes)
+	if err := s.recordBranchMerge(ctx, requestID, m); err != nil {
+		return 0, err
+	}
+	return requestID, nil
+}
+
+// currentOf reads where a database is now. Callers have already established
+// that it is theirs and that it has been read.
+func (s *Scope) currentOf(ctx context.Context, databaseID int64) schema.Version {
+	var fingerprint string
+	s.store.pool.QueryRow(ctx, `
+		SELECT COALESCE(d.current_fingerprint, '')
+		  FROM schemaver.database d
+		  JOIN schemaver.instance i ON i.id = d.instance_id
+		 WHERE d.id = $1 AND i.project_id = ANY($2)`, databaseID, s.projects).
+		Scan(&fingerprint)
+	return schema.Version(fingerprint)
+}
+
+// recordBranchMerge turns a planned merge into the request's migration.
+//
+// Separate from MergeBranch so that regenerating one — after a rename question
+// is answered, or the branch moves — rebuilds the plan on the request that
+// already exists rather than opening a second one and losing the discussion.
+func (s *Scope) recordBranchMerge(ctx context.Context, requestID int64, m *BranchMerge) error {
+	// The merged schema is stored before it is declared: the target
+	// fingerprint is a foreign key into the blobs, and this is a schema no
+	// database has been observed at.
+	if err := s.store.StoreSchema(ctx, m.Result, m.Target); err != nil {
+		return err
+	}
+	// Recomputed here rather than taken from the plan, because the plan was
+	// made for a preview and does not know which request it is being recorded
+	// against — and the answers to that request's rename questions are what
+	// decide whether a column keeps its data.
+	confirmed, err := s.ConfirmedRenames(ctx, requestID)
+	if err != nil {
+		return err
+	}
+	fromVersion, current := m.From, m.Current
+	result := diff.ComputeWith(current, m.Result, confirmed)
 	statements := render.Statements(result.Changes, current, m.Result)
 	steps := make([]Step, 0, len(statements))
 	for i, st := range statements {
@@ -637,20 +679,7 @@ func (s *Scope) MergeBranch(ctx context.Context, actorID, branchID, databaseID i
 	}
 	if _, err := s.store.recordMigration(ctx, requestID, fromVersion, m.Target,
 		result, steps, diff.Weight(result.Changes), mergeBase); err != nil {
-		return 0, err
+		return err
 	}
-	return requestID, nil
-}
-
-// currentOf reads where a database is now. Callers have already established
-// that it is theirs and that it has been read.
-func (s *Scope) currentOf(ctx context.Context, databaseID int64) schema.Version {
-	var fingerprint string
-	s.store.pool.QueryRow(ctx, `
-		SELECT COALESCE(d.current_fingerprint, '')
-		  FROM schemaver.database d
-		  JOIN schemaver.instance i ON i.id = d.instance_id
-		 WHERE d.id = $1 AND i.project_id = ANY($2)`, databaseID, s.projects).
-		Scan(&fingerprint)
-	return schema.Version(fingerprint)
+	return nil
 }

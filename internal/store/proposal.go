@@ -191,7 +191,17 @@ func (s *Scope) GenerateMigration(ctx context.Context, actorID, requestID int64)
 		to, toFP, mergeBase = merged.Result, &target, string(merged.Base)
 	}
 
-	result := diff.Compute(from, to)
+	// Renames somebody has already settled on this request. Carried across a
+	// regeneration on purpose: an approval is evidence about a list of
+	// statements and expires with it, while this is a statement about intent —
+	// that this column became that one — which rebuilding the plan does not
+	// make less true.
+	confirmed, err := s.ConfirmedRenames(ctx, requestID)
+	if err != nil {
+		return 0, err
+	}
+
+	result := diff.ComputeWith(from, to, confirmed)
 	if result.Empty() {
 		if mergeBase != "" {
 			// Not a defect: the merge resolved to where this database already

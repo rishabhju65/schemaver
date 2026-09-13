@@ -116,17 +116,17 @@ func (s *Scope) ApprovalState(ctx context.Context, requestID int64) (*ApprovalSt
 		st          ApprovalState
 		authorID    *int64
 		projectID   int64
-		renames     int
+		renamesJSON []byte
 		mergeBase   string
 		changesJSON []byte
 	)
 
 	err := s.store.pool.QueryRow(ctx, `
 		SELECT m.id, m.from_fingerprint, m.to_fingerprint,
-		       -- Tolerate a scalar null from any row written before the
-		       -- generator was fixed to store an empty array.
-		       jsonb_array_length(
-		           COALESCE(NULLIF(m.rename_candidates, 'null'::jsonb), '[]'::jsonb)),
+		       -- The candidates this plan raises, answered or not. Which of
+		       -- them are still open is worked out below, where the answers can
+		       -- be matched to them by name.
+		       COALESCE(NULLIF(m.rename_candidates, 'null'::jsonb), '[]'::jsonb),
 		       r.author_id, r.project_id,
 		       m.proof_state, COALESCE(m.proof_reason, ''), m.plan_digest,
 		       m.revert_proof_state, COALESCE(m.revert_proof_reason, ''),
@@ -145,7 +145,7 @@ func (s *Scope) ApprovalState(ctx context.Context, requestID int64) (*ApprovalSt
 		 ORDER BY m.generated_at DESC
 		 LIMIT 1`, requestID, s.projects).
 		Scan(&st.MigrationID, &st.FromFingerprint, &st.ToFingerprint,
-			&renames, &authorID, &projectID, &st.ProofState, &st.ProofReason,
+			&renamesJSON, &authorID, &projectID, &st.ProofState, &st.ProofReason,
 			&st.PlanDigest, &st.RevertProofState, &st.RevertProofReason,
 			&st.RevertWritten, &st.NoRevertReason, &st.PromotionSource, &st.PromotionReached,
 			&st.PromotionAt, &mergeBase, &changesJSON)
@@ -155,7 +155,24 @@ func (s *Scope) ApprovalState(ctx context.Context, requestID int64) (*ApprovalSt
 	if err != nil {
 		return nil, fmt.Errorf("load migration for request %d: %w", requestID, err)
 	}
-	st.UnansweredRenames = renames
+	// A candidate with an answer against it is no longer a question. Both
+	// answers settle it: "renamed" changed the statements when it was given,
+	// and "not renamed" confirmed that the drop already in the plan is what was
+	// meant — which is the more dangerous of the two and the reason the gate
+	// insists on hearing it rather than assuming it.
+	var candidates []diff.RenameCandidate
+	if err := json.Unmarshal(renamesJSON, &candidates); err != nil {
+		return nil, fmt.Errorf("decode rename candidates: %w", err)
+	}
+	answered, err := s.store.answeredRenames(ctx, requestID)
+	if err != nil {
+		return nil, err
+	}
+	for _, c := range candidates {
+		if !answered[renameKey(c.Namespace, c.Table, c.From, c.To)] {
+			st.UnansweredRenames++
+		}
+	}
 
 	// A merge does not end where the lower environment is, so the fingerprint
 	// test above cannot answer the promotion question for one.

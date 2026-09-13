@@ -124,6 +124,12 @@ type AuthoredTask struct {
 	BaseSchema *schema.Schema
 	From       string
 	Statements []string
+
+	// Renames already settled on this request. The author's statements do not
+	// change when one is answered — they are the author's — but what schemaver
+	// makes of them does: a confirmed rename is described as keeping the data
+	// rather than as a drop that discards it.
+	Renames []diff.Rename
 }
 
 // LoadAuthoredTask assembles a derivation.
@@ -154,7 +160,23 @@ func (s *Store) LoadAuthoredTask(ctx context.Context, requestID int64) (*Authore
 	}
 	t.BaseDDL = render.Schema(&base)
 	t.BaseSchema = &base
-	return t, nil
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT namespace, table_name, from_column, to_column
+		  FROM schemaver.rename_decision
+		 WHERE change_request_id = $1 AND renamed`, requestID)
+	if err != nil {
+		return nil, fmt.Errorf("read confirmed renames: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var r diff.Rename
+		if err := rows.Scan(&r.Namespace, &r.Table, &r.From, &r.To); err != nil {
+			return nil, fmt.Errorf("scan confirmed rename: %w", err)
+		}
+		t.Renames = append(t.Renames, r)
+	}
+	return t, rows.Err()
 }
 
 // StoreSchema records a canonical schema against its fingerprint.
@@ -219,7 +241,18 @@ func (s *Store) recordMigration(ctx context.Context, requestID int64, from, to s
 	if len(result.Changes) == 0 {
 		changesJSON = []byte("[]")
 	}
-	renamesJSON, err := json.Marshal([]diff.RenameCandidate{})
+	// The candidates this plan raises, not an empty list.
+	//
+	// They were discarded here, which meant a rename question was never asked
+	// on a written change or a branch merge: the drop and the add went through
+	// as themselves, and a column's data was discarded without anybody being
+	// asked whether that was the intention. The gate only ever held the
+	// database-to-database path, which was the one path that filled this in.
+	renames := result.Renames
+	if renames == nil {
+		renames = []diff.RenameCandidate{}
+	}
+	renamesJSON, err := json.Marshal(renames)
 	if err != nil {
 		return 0, fmt.Errorf("serialize rename candidates: %w", err)
 	}
@@ -355,5 +388,25 @@ func (s *Scope) ReviseAuthored(ctx context.Context, actorID, requestID int64, sq
 		"revised the script; working out what it does again").
 		By(actorID).
 		OnRequest(requestID))
+	return nil
+}
+
+// EnqueueDerivation asks for a written change's statements to be run against a
+// throwaway copy again.
+//
+// The statements are the author's and are not touched; what changes is what
+// schemaver makes of them — after a rename question is answered, the same SQL
+// produces a different classification of the same outcome.
+func (s *Store) EnqueueDerivation(ctx context.Context, requestID int64) error {
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO schemaver.job
+		    (kind, target_kind, target_id, weight, idempotency_key)
+		VALUES ('derive', 'request', $1, 1, $2)
+		ON CONFLICT (idempotency_key) DO UPDATE
+		   SET state = 'pending', run_after = now(), error = NULL,
+		       finished_at = NULL`,
+		requestID, fmt.Sprintf("derive:%d", requestID)); err != nil {
+		return fmt.Errorf("queue the derivation: %w", err)
+	}
 	return nil
 }

@@ -84,7 +84,7 @@ func (w *Worker) derive(ctx context.Context, requestID int64) error {
 	if err := w.store.StoreSchema(ctx, after, to); err != nil {
 		return fmt.Errorf("store the resulting schema: %w", err)
 	}
-	result := diff.Compute(task.BaseSchema, after)
+	result := diff.ComputeWith(task.BaseSchema, after, task.Renames)
 
 	migrationID, err := w.store.RecordDerivation(ctx, requestID, from, to,
 		result, task.Statements, diff.Weight(result.Changes))
