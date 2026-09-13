@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -368,5 +369,47 @@ func TestVerdictsFreezeOnceAMigrationHasRun(t *testing.T) {
 			t.Errorf("a verdict was accepted on a %s request; rejecting it does "+
 				"not un-run it, and approving it is a comment on the past", state)
 		}
+	}
+}
+
+// TestAMissingRequestIsReportedAsMissing covers a sentinel that was built and
+// then never returned.
+//
+// Request had two identical `pgx.ErrNoRows` branches. The first returned a
+// freshly constructed error and the second — the one returning ErrNoSuchRequest
+// — was unreachable, so the web handler's `errors.Is(err, ErrNoSuchRequest)`
+// never matched and every missing request came back as a 500.
+//
+// It matters beyond the status code. A request belonging to another tenant is
+// scoped out by the same query, so it has to be indistinguishable from one that
+// does not exist; reporting a fault instead tells the reader something is there.
+func TestAMissingRequestIsReportedAsMissing(t *testing.T) {
+	url := os.Getenv("SCHEMAVER_METADATA_URL")
+	if url == "" {
+		t.Skip("set SCHEMAVER_METADATA_URL to run this test")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pool, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	var projectID int64
+	if err := pool.QueryRow(ctx,
+		`SELECT project_id FROM schemaver.project_member ORDER BY project_id LIMIT 1`).
+		Scan(&projectID); err != nil {
+		t.Skipf("no project: %v", err)
+	}
+
+	var highest int64
+	pool.QueryRow(ctx, `SELECT COALESCE(max(id), 0) FROM schemaver.change_request`).
+		Scan(&highest)
+
+	_, err = store.New(pool, nil).ForProject(projectID).Request(ctx, highest+1000)
+	if !errors.Is(err, store.ErrNoSuchRequest) {
+		t.Errorf("a request that is not there gave %v, want ErrNoSuchRequest", err)
 	}
 }

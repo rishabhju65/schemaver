@@ -216,9 +216,6 @@ func (s *Scope) Request(ctx context.Context, id int64) (*RequestDetail, error) {
 			&changesJSON, &renamesJSON, &d.AuthoredSQL, &d.NoRevertReason,
 			&d.ClosedAt, &d.ClosedBy)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, errors.New("no such change request")
-	}
-	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNoSuchRequest
 	}
 	if err != nil {
