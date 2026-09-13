@@ -466,3 +466,71 @@ func TestFollowingCannotFormALoop(t *testing.T) {
 		t.Errorf("two databases following the same one was refused: %v", err)
 	}
 }
+
+// TestANewProjectGetsTwoEnvironments pins the shape a project starts with.
+//
+// Two, because two is what the product uses: a change reaches production
+// through the environment below it, and staging is that environment. A third
+// rung was somewhere to put a database and nothing more, and every extra
+// concept in a tool people use occasionally is one more thing to work out
+// before they can use it.
+func TestANewProjectGetsTwoEnvironments(t *testing.T) {
+	url := os.Getenv("SCHEMAVER_METADATA_URL")
+	if url == "" {
+		t.Skip("set SCHEMAVER_METADATA_URL to run the environment test")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pool, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	st := store.New(pool, nil)
+
+	org, project, user, err := st.CreateOrganization(ctx,
+		"env-probe-org", "env-probe-project",
+		"env-probe@example.test", "Env Probe", "not-a-real-hash")
+	if err != nil {
+		t.Fatalf("CreateOrganization: %v", err)
+	}
+	t.Cleanup(func() {
+		pool.Exec(context.Background(),
+			`DELETE FROM schemaver.organization WHERE id = $1`, org.ID)
+	})
+	_ = user
+
+	rows, err := pool.Query(ctx, `
+		SELECT name, rank FROM schemaver.environment
+		 WHERE project_id = $1 ORDER BY rank`, project.ID)
+	if err != nil {
+		t.Fatalf("read environments: %v", err)
+	}
+	defer rows.Close()
+
+	var names []string
+	var ranks []int
+	for rows.Next() {
+		var name string
+		var rank int
+		if err := rows.Scan(&name, &rank); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		names = append(names, name)
+		ranks = append(ranks, rank)
+	}
+	if len(names) != 2 {
+		t.Fatalf("a new project got %d environments (%v), want 2", len(names), names)
+	}
+	if names[0] != "staging" || names[1] != "production" {
+		t.Errorf("got %v in rank order, want staging then production", names)
+	}
+	// Order is the only thing rank means, and the gate reads it to tell a
+	// promotion link pointing the right way from one pointing backwards.
+	if ranks[0] >= ranks[1] {
+		t.Errorf("staging ranks %d and production %d; staging must come first "+
+			"or a change would be required to reach production before staging",
+			ranks[0], ranks[1])
+	}
+}

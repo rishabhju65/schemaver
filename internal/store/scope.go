@@ -150,9 +150,13 @@ func (s *Store) CreateOrganization(ctx context.Context, orgName, projectName, em
 
 	// Environments belong to a project; one starting with none would have
 	// nowhere to place a database.
+	//
+	// Two, because two is what the product uses: a change reaches production
+	// through the environment below it, and staging is that environment. A
+	// third rung was a place to put a database and nothing more.
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO schemaver.environment (name, rank, project_id)
-		VALUES ('development', 10, $1), ('staging', 20, $1), ('production', 30, $1)`,
+		VALUES ('staging', 10, $1), ('production', 20, $1)`,
 		project.ID); err != nil {
 		return nil, nil, nil, fmt.Errorf("seed environments: %w", err)
 	}
