@@ -207,6 +207,43 @@ func (s *Scope) ApplyDatabaseSettings(ctx context.Context, instanceID int64, set
 		// would make the execute gate require production to have a change
 		// before staging could have it, which is the sequence this exists to
 		// prevent.
+		// The values written here are as attacker-controlled as the row they are
+		// written to, and only the row was being checked. The UPDATE below
+		// scopes which database may be changed; it said nothing about what it
+		// may be changed *to*, so a crafted form could point one tenant's
+		// database at another tenant's — leaking that database's name onto the
+		// fleet, the drift page and the database page, and putting its
+		// fingerprint into the attacker's drift records once the comparison ran.
+		//
+		// Scoping a write means scoping both ends of it.
+		if set.PeerID != nil {
+			var ours bool
+			if err := tx.QueryRow(ctx, `
+				SELECT EXISTS (
+					SELECT 1 FROM schemaver.database d
+					  JOIN schemaver.instance i ON i.id = d.instance_id
+					 WHERE d.id = $1 AND i.project_id = ANY($2))`,
+				*set.PeerID, s.projects).Scan(&ours); err != nil {
+				return fmt.Errorf("check the database being followed: %w", err)
+			}
+			if !ours {
+				return fmt.Errorf("no such database")
+			}
+		}
+		if set.EnvironmentID != nil {
+			var ours bool
+			if err := tx.QueryRow(ctx, `
+				SELECT EXISTS (
+					SELECT 1 FROM schemaver.environment e
+					 WHERE e.id = $1 AND e.project_id = ANY($2))`,
+				*set.EnvironmentID, s.projects).Scan(&ours); err != nil {
+				return fmt.Errorf("check the environment: %w", err)
+			}
+			if !ours {
+				return fmt.Errorf("no such environment")
+			}
+		}
+
 		// A chain that comes back to where it started cannot be satisfied: each
 		// database waits for the one below it to reach a schema, and in a cycle
 		// every member is below every other, so none may go first. It deadlocks
