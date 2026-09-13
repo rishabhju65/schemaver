@@ -11,12 +11,14 @@ migration.</p>
   <label>Change this database
     <select name="database" required>
       <option value="">—</option>
-      {{range .Databases}}<option value="{{.ID}}">{{.Name}} · {{.Instance}}{{if .Environment}} · {{.Environment}}{{end}}</option>{{end}}
+      {{$t := $.Target}}
+      {{range .Databases}}<option value="{{.ID}}" {{if eq (printf "%d" .ID) $t}}selected{{end}}>{{.Name}} · {{.Instance}}{{if .Environment}} · {{.Environment}}{{end}}</option>{{end}}
     </select></label>
   <label>To match this one
     <select name="source" required>
       <option value="">—</option>
-      {{range .Databases}}<option value="{{.ID}}">{{.Name}} · {{.Instance}}{{if .Environment}} · {{.Environment}}{{end}}</option>{{end}}
+      {{$s := $.Source}}
+      {{range .Databases}}<option value="{{.ID}}" {{if eq (printf "%d" .ID) $s}}selected{{end}}>{{.Name}} · {{.Instance}}{{if .Environment}} · {{.Environment}}{{end}}</option>{{end}}
     </select>
     <span class="hint">Only databases whose schema has been read are listed —
     one that has not been observed has nothing to diff against.</span></label>

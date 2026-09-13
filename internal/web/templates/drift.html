@@ -1,10 +1,12 @@
 {{define "content"}}
 <h1>Drift</h1>
-<p class="sub">Databases whose schema differs from what they are expected to match.</p>
+<p class="sub">Databases whose schema differs from what they are expected to
+match. schemaver reports a divergence; closing one means proposing a change,
+which generates the migration from the difference.</p>
 <div class="card scroll">
 <table>
 <tr><th>Database</th><th>Environment</th><th>Compared against</th>
-<th>Observed</th><th>Expected</th><th>Since</th><th>Status</th></tr>
+<th>Observed</th><th>Expected</th><th>Since</th><th>Status</th><th></th></tr>
 {{range .Rows}}
 <tr>
   <td>{{.Database}}<br><span class="fp">{{.Instance}}</span></td>
@@ -15,9 +17,16 @@
   <td class="fp">{{stamp .FirstSeen}}</td>
   <td>{{if eq .Status "open"}}<span class="removed">open</span>
       {{else}}<span class="fp">{{.Status}}</span>{{end}}</td>
+  {{/* The page knows which two databases diverged, so it can open the proposal
+       already pointed at them. Without this, drift reports a problem and offers
+       nothing to do about it — the reader has to go to Changes and find both
+       databases again from memory. */}}
+  <td class="fp">{{if and (eq .Status "open") .PeerID $.CanWrite}}
+    <a href="/requests/new?target={{.DatabaseID}}&source={{.PeerID}}">Propose a change</a>
+  {{end}}</td>
 </tr>
 {{else}}
-<tr><td colspan="7" class="empty">
+<tr><td colspan="8" class="empty">
 No divergence detected. Note that a database with nothing configured to compare
 against will never appear here — that is not the same as being in agreement.</td></tr>
 {{end}}

@@ -190,7 +190,12 @@ func (s *Scope) Fleet(ctx context.Context) ([]DatabaseRow, error) {
 
 // DriftRow is one open or resolved divergence.
 type DriftRow struct {
-	ID          int64
+	ID int64
+	// DatabaseID and PeerID carry the identities behind the names, so a reader
+	// looking at a divergence can act on it rather than having to find both
+	// databases again by hand on another page.
+	DatabaseID  int64
+	PeerID      *int64
 	Database    string
 	Instance    string
 	Environment string
@@ -206,7 +211,7 @@ type DriftRow struct {
 // Drifts lists divergences, open ones first.
 func (s *Scope) Drifts(ctx context.Context, includeResolved bool) ([]DriftRow, error) {
 	rows, err := s.store.pool.Query(ctx, `
-		SELECT f.id, d.name, i.name, COALESCE(e.name, ''),
+		SELECT f.id, d.id, f.peer_database_id, d.name, i.name, COALESCE(e.name, ''),
 		       f.observed_fingerprint, f.expected_fingerprint,
 		       f.expected_source, COALESCE(p.name, ''),
 		       f.status, f.first_seen, f.last_seen
@@ -226,7 +231,8 @@ func (s *Scope) Drifts(ctx context.Context, includeResolved bool) ([]DriftRow, e
 	for rows.Next() {
 		var r DriftRow
 		var observed, expected string
-		if err := rows.Scan(&r.ID, &r.Database, &r.Instance, &r.Environment,
+		if err := rows.Scan(&r.ID, &r.DatabaseID, &r.PeerID,
+			&r.Database, &r.Instance, &r.Environment,
 			&observed, &expected, &r.Source, &r.Peer, &r.Status,
 			&r.FirstSeen, &r.LastSeen); err != nil {
 			return nil, fmt.Errorf("scan drift row: %w", err)

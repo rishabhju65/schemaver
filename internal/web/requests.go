@@ -42,8 +42,27 @@ func (s *Server) requestNew(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// Carried through from the query string so another page can open this one
+	// already pointed at two databases — drift knows which pair diverged, and
+	// making the reader find both again by hand is how a report becomes a dead
+	// end. Parsed leniently: an id that is not a number, or names a database
+	// this caller cannot see, simply leaves the field unselected rather than
+	// refusing the page.
 	data := func(cause error) map[string]any {
-		m := map[string]any{"Databases": candidates}
+		// The select is named "database" and the query parameter is "target",
+		// so both are consulted: the field first, so that a submission which
+		// fails validation re-renders with the reader's own choice still in it
+		// rather than silently emptied, and the query parameter second, so a
+		// link from elsewhere can open this page already pointed somewhere.
+		target := r.FormValue("database")
+		if target == "" {
+			target = r.FormValue("target")
+		}
+		m := map[string]any{
+			"Databases": candidates,
+			"Target":    target,
+			"Source":    r.FormValue("source"),
+		}
 		if cause != nil {
 			m["Error"] = cause.Error()
 		}

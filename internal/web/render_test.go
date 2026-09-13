@@ -303,3 +303,41 @@ func TestUnknownEngineFallsBackRatherThanPassingThrough(t *testing.T) {
 		}
 	}
 }
+
+// TestProposeFormRemembersItsSelection covers the two ways this page is opened
+// already pointing somewhere.
+//
+// Drift knows which pair diverged and links here with them set, and a
+// submission that fails validation must re-render with the reader's own choice
+// intact rather than silently emptied — which is worse than not pre-filling at
+// all, because the page looks filled in until you look.
+func TestProposeFormRemembersItsSelection(t *testing.T) {
+	s := server(t, auth.Completed(), false)
+
+	dbs := []store.DatabaseRow{
+		{ID: 4, Name: "shop_prod", Instance: "db:5432"},
+		{ID: 5, Name: "shop_staging", Instance: "db:5432"},
+	}
+	var out strings.Builder
+	if err := s.tmpl["request_new"].ExecuteTemplate(&out, "layout", map[string]any{
+		"Databases": dbs, "Target": "4", "Source": "5",
+		"Title": "Propose a change", "Nav": "requests", "CSRF": "t",
+	}); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	page := out.String()
+
+	for _, want := range []string{
+		`<option value="4" selected>`,
+		`<option value="5" selected>`,
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the form did not preselect %s", want)
+		}
+	}
+	// Exactly one per list, or the browser takes the last and the page lies
+	// about what it will submit.
+	if n := strings.Count(page, "selected"); n != 2 {
+		t.Errorf("%d options marked selected across two lists, want 2", n)
+	}
+}
