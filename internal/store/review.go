@@ -2,12 +2,14 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/rishabhju65/schemaver/internal/auth"
+	"github.com/rishabhju65/schemaver/internal/diff"
 	"github.com/rishabhju65/schemaver/internal/schema"
 )
 
@@ -111,10 +113,12 @@ var ErrNoMigration = errors.New("this request has no generated migration")
 // ApprovalState evaluates the execute gate for a change request.
 func (s *Scope) ApprovalState(ctx context.Context, requestID int64) (*ApprovalState, error) {
 	var (
-		st        ApprovalState
-		authorID  *int64
-		projectID int64
-		renames   int
+		st          ApprovalState
+		authorID    *int64
+		projectID   int64
+		renames     int
+		mergeBase   string
+		changesJSON []byte
 	)
 
 	err := s.store.pool.QueryRow(ctx, `
@@ -129,7 +133,8 @@ func (s *Scope) ApprovalState(ctx context.Context, requestID int64) (*ApprovalSt
 		       m.revert_authored_at IS NOT NULL, COALESCE(m.no_revert_reason, ''),
 		       COALESCE(peer.name, ''),
 		       COALESCE(peer.current_fingerprint, '') = m.to_fingerprint,
-		       COALESCE(peer.current_fingerprint, '')
+		       COALESCE(peer.current_fingerprint, ''),
+		       COALESCE(m.merge_base, ''), COALESCE(m.changes, '[]'::jsonb)
 		  FROM schemaver.change_request r
 		  JOIN schemaver.migration m ON m.change_request_id = r.id
 		  JOIN schemaver.database d ON d.id = r.database_id
@@ -143,7 +148,7 @@ func (s *Scope) ApprovalState(ctx context.Context, requestID int64) (*ApprovalSt
 			&renames, &authorID, &projectID, &st.ProofState, &st.ProofReason,
 			&st.PlanDigest, &st.RevertProofState, &st.RevertProofReason,
 			&st.RevertWritten, &st.NoRevertReason, &st.PromotionSource, &st.PromotionReached,
-			&st.PromotionAt)
+			&st.PromotionAt, &mergeBase, &changesJSON)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNoMigration
 	}
@@ -151,6 +156,30 @@ func (s *Scope) ApprovalState(ctx context.Context, requestID int64) (*ApprovalSt
 		return nil, fmt.Errorf("load migration for request %d: %w", requestID, err)
 	}
 	st.UnansweredRenames = renames
+
+	// A merge does not end where the lower environment is, so the fingerprint
+	// test above cannot answer the promotion question for one.
+	//
+	// "Has this been through staging" is asked as "is staging already at the
+	// schema this migration targets", and that equivalence holds only while the
+	// target is a schema staging could be at. A merge ends at the ancestor with
+	// *both* sides' work applied — including production's own, which staging
+	// has no reason to have — so the fingerprints never match and the gate
+	// would shut permanently on every merge.
+	//
+	// The question underneath it still has an answer: has the work this
+	// migration carries already run down there. Asked as "is there anything
+	// this migration touches that staging still needs", which reduces to the
+	// fingerprint test whenever the target is the source's own schema, and
+	// keeps the property that matters — it is recomputed from where staging is
+	// now, so it shuts again by itself if staging moves off (D-010).
+	if mergeBase != "" && !st.PromotionReached && st.PromotionAt != "" {
+		reached, err := s.peerHasTheWork(ctx, st.PromotionAt, st.ToFingerprint, changesJSON)
+		if err != nil {
+			return nil, err
+		}
+		st.PromotionReached = reached
+	}
 
 	// Only decisions about *this* migration, and about its statements as they
 	// stand now. A regenerated migration leaves its predecessor's approvals
@@ -446,4 +475,45 @@ func (s *Scope) Decide(ctx context.Context, requestID, reviewerID int64, verdict
 			"from": from, "to": to,
 		}))
 	return nil
+}
+
+// peerHasTheWork reports whether the lower environment already reflects every
+// object this migration touches.
+//
+// The migration's own change list says which objects are in play. Diffing the
+// peer against the migration's target says what the peer would still need to
+// get there. Where those two sets do not meet, everything this change carries
+// is already down there and whatever remains is the other side's own work,
+// which was never this migration's to deliver.
+func (s *Scope) peerHasTheWork(ctx context.Context, peerFP, targetFP string, changesJSON []byte) (bool, error) {
+	var carried []diff.Change
+	if err := json.Unmarshal(changesJSON, &carried); err != nil {
+		return false, fmt.Errorf("decode this migration's changes: %w", err)
+	}
+	if len(carried) == 0 {
+		return false, nil
+	}
+
+	peer, err := s.Blob(ctx, schema.Version(peerFP))
+	if err != nil || peer == nil {
+		// Unreadable rather than absent: the peer's schema is stored whenever
+		// it has been observed, so failing to read it is not evidence that a
+		// rehearsal happened. Shut, and let the fingerprint message stand.
+		return false, nil
+	}
+	target, err := s.Blob(ctx, schema.Version(targetFP))
+	if err != nil || target == nil {
+		return false, nil
+	}
+
+	outstanding := map[string]bool{}
+	for _, c := range diff.Compute(peer, target).Changes {
+		outstanding[c.Qualified()] = true
+	}
+	for _, c := range carried {
+		if outstanding[c.Qualified()] {
+			return false, nil
+		}
+	}
+	return true, nil
 }

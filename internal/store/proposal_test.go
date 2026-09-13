@@ -78,6 +78,13 @@ func TestProposeReviewApprove(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		bg := context.Background()
+		// Change requests first. Deleting the databases while one still refers
+		// to them fails on the foreign key, and because the error was discarded
+		// the whole fixture survived — a fake server, visible in the fleet,
+		// holding the host name the next run needs.
+		pool.Exec(bg, `DELETE FROM schemaver.change_request
+		                WHERE database_id IN (SELECT id FROM schemaver.database
+		                                       WHERE instance_id = $1)`, instanceID)
 		pool.Exec(bg, `DELETE FROM schemaver.database WHERE instance_id = $1`, instanceID)
 		pool.Exec(bg, `DELETE FROM schemaver.instance WHERE id = $1`, instanceID)
 	})

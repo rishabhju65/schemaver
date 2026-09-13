@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/rishabhju65/schemaver/internal/diff"
@@ -115,13 +116,15 @@ func (s *Scope) GenerateMigration(ctx context.Context, actorID, requestID int64)
 	}()
 
 	var fromFP, toFP *string
+	var targetID, sourceID int64
 	err = s.store.pool.QueryRow(ctx, `
-		SELECT target.current_fingerprint, source.current_fingerprint
+		SELECT target.current_fingerprint, source.current_fingerprint,
+		       target.id, source.id
 		  FROM schemaver.change_request r
 		  JOIN schemaver.database target ON target.id = r.database_id
 		  JOIN schemaver.database source ON source.id = r.source_database_id
 		 WHERE r.id = $1 AND r.project_id = ANY($2)`, requestID, s.projects).
-		Scan(&fromFP, &toFP)
+		Scan(&fromFP, &toFP, &targetID, &sourceID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, errors.New("no such change request, or it has no source database")
 	}
@@ -144,8 +147,61 @@ func (s *Scope) GenerateMigration(ctx context.Context, actorID, requestID int64)
 		return 0, err
 	}
 
+	// A merge where the two lines both moved, an ordinary comparison where
+	// they did not.
+	//
+	// Comparing the two schemas directly answers "what would make this one look
+	// like that one", and that answer includes undoing whatever this one did on
+	// its own. Where both have moved since they last agreed it is an overwrite
+	// dressed as a migration: a column production grew and staging never had
+	// comes out as a DROP, classified destructive, and offered for approval as
+	// though discarding it were somebody's intention.
+	//
+	// So where a common ancestor exists and both sides have moved, the
+	// migration goes to the *merged* schema — the ancestor with both sides'
+	// independent work applied — rather than to the source's. Objects both
+	// sides changed differently stop the generation, because which intention
+	// was meant is not recoverable from the schemas, and picking one is how the
+	// other's work disappears.
+	var mergeBase string
+	if merged, mergeErr := s.PlanMerge(ctx, targetID, sourceID); mergeErr == nil && merged.Diverged() {
+		if !merged.Clean() {
+			lines := make([]string, 0, len(merged.Conflicts))
+			for _, c := range merged.Conflicts {
+				lines = append(lines, "  · "+c.Describe())
+			}
+			subject := "1 object"
+			if n := len(merged.Conflicts); n > 1 {
+				subject = fmt.Sprintf("%d objects", n)
+			}
+			return 0, fmt.Errorf(
+				"these two have both changed since they last agreed at %s, and "+
+					"disagree about %s:\n%s\nResolve it on one side or the other "+
+					"and try again; taking one side's version silently is how the "+
+					"other's work disappears",
+				merged.Base.Short(), subject, strings.Join(lines, "\n"))
+		}
+		// The merged schema has to be stored before it can be declared: the
+		// target fingerprint is a foreign key into the blobs, and this is a
+		// schema no database has been observed at.
+		if err := s.store.putBlob(ctx, merged.Target, merged.Result); err != nil {
+			return 0, err
+		}
+		target := string(merged.Target)
+		to, toFP, mergeBase = merged.Result, &target, string(merged.Base)
+	}
+
 	result := diff.Compute(from, to)
 	if result.Empty() {
+		if mergeBase != "" {
+			// Not a defect: the merge resolved to where this database already
+			// is, because everything the other side did it had already.
+			return 0, fmt.Errorf(
+				"there is nothing to bring across; since these two last agreed "+
+					"at %s the other side has done nothing this database does "+
+					"not already have",
+				schema.Version(mergeBase).Short())
+		}
 		// Different fingerprints with no changes would mean the diff engine and
 		// the canonical model disagree, which is a bug rather than a no-op.
 		return 0, fmt.Errorf(
@@ -199,12 +255,13 @@ func (s *Scope) GenerateMigration(ctx context.Context, actorID, requestID int64)
 	if err := tx.QueryRow(ctx, `
 		INSERT INTO schemaver.migration
 		    (change_request_id, from_fingerprint, to_fingerprint, changes,
-		     rename_candidates, irreversible_reason, weight, plan_digest)
-		VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), $7, $8)
+		     rename_candidates, irreversible_reason, weight, plan_digest,
+		     merge_base)
+		VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), $7, $8, NULLIF($9, ''))
 		RETURNING id`,
 		requestID, *fromFP, *toFP, changesJSON, renamesJSON,
 		irreversibleReason(result), diff.Weight(result.Changes),
-		digest).Scan(&migrationID); err != nil {
+		digest, mergeBase).Scan(&migrationID); err != nil {
 		return 0, fmt.Errorf("store migration: %w", err)
 	}
 

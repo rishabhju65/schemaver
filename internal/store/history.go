@@ -101,18 +101,29 @@ func (s *Scope) Blob(ctx context.Context, fingerprint schema.Version) (*schema.S
 	if fingerprint == "" {
 		return nil, nil
 	}
-	// Reachable only through this account's own observations. A fingerprint is
-	// unguessable, but scoping the lookup means the guarantee does not rest on
-	// that.
+	// Reachable only through this account's own observations, or through a
+	// migration of its own that names the schema. A fingerprint is unguessable,
+	// but scoping the lookup means the guarantee does not rest on that.
+	//
+	// The second reason exists for merges. A merged schema is computed rather
+	// than read off a database, so no snapshot will ever mention it, and on
+	// observations alone the project could not read back the very target its
+	// own migration declares. Scoping still holds: the migration has to belong
+	// to this project for its schemas to be readable by it.
 	var canonical []byte
 	if err := s.store.pool.QueryRow(ctx, `
 		SELECT b.canonical FROM schemaver.schema_blob b
 		 WHERE b.fingerprint = $1
-		   AND EXISTS (
+		   AND (EXISTS (
 		       SELECT 1 FROM schemaver.snapshot sn
 		         JOIN schemaver.database d ON d.id = sn.database_id
 		         JOIN schemaver.instance i ON i.id = d.instance_id
-		        WHERE sn.fingerprint = b.fingerprint AND i.project_id = ANY($2))`,
+		        WHERE sn.fingerprint = b.fingerprint AND i.project_id = ANY($2))
+		    OR EXISTS (
+		       SELECT 1 FROM schemaver.migration m
+		         JOIN schemaver.change_request r ON r.id = m.change_request_id
+		        WHERE b.fingerprint IN (m.from_fingerprint, m.to_fingerprint, m.merge_base)
+		          AND r.project_id = ANY($2)))`,
 		string(fingerprint), s.projects).Scan(&canonical); err != nil {
 		return nil, fmt.Errorf("load schema %s: %w", fingerprint.Short(), err)
 	}
