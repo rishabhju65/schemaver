@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -30,7 +31,13 @@ func TestProposeReviewApprove(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	defer pool.Close()
+	// t.Cleanup rather than defer, and the difference is the whole reason this
+	// test kept leaving a fake server behind. Deferred calls run as the test
+	// function returns; cleanup callbacks run after that. Closing the pool with
+	// defer therefore closed it *before* the cleanup below, so every statement
+	// in it failed against a closed pool — silently, because their errors are
+	// discarded. Registered here first, it runs last.
+	t.Cleanup(pool.Close)
 	st := store.New(pool, nil)
 
 	// Two databases of this test's own, at two schemas that genuinely differ.
@@ -54,27 +61,40 @@ func TestProposeReviewApprove(t *testing.T) {
 		t.Skipf("no project with an administrator and a server: %v", err)
 	}
 
-	// Two schemas this project has actually observed. A blob is readable only
-	// through a snapshot belonging to the caller — that is how D-014 keeps one
-	// project from reading another's schemas — so an arbitrary pair of
-	// fingerprints would be refused however real they are.
-	var older, newer string
-	if err := pool.QueryRow(ctx, `
-		SELECT min(sn.fingerprint), max(sn.fingerprint)
-		  FROM schemaver.snapshot sn
-		  JOIN schemaver.database d ON d.id = sn.database_id
-		  JOIN schemaver.instance i ON i.id = d.instance_id
-		 WHERE i.project_id = $1 AND sn.fingerprint IS NOT NULL`, projectID).
-		Scan(&older, &newer); err != nil || older == newer {
-		t.Skipf("this project has not observed two different schemas: %v", err)
-	}
+	// Two schemas of this test's own rather than two the deployment happens to
+	// hold.
+	//
+	// It used to take min and max of every fingerprint the project had ever
+	// observed, which made the test's subject whatever those two schemas
+	// happened to differ by. Adding any unrelated schema to the project changed
+	// the pair, and eventually picked one whose difference reads as a rename —
+	// at which point the gate stayed shut on an unanswered rename question and
+	// a test about approval failed for reasons that had nothing to do with it.
+	//
+	// Built here instead, so the difference is exactly one added column: no
+	// drop, so nothing to mistake for a rename, and a revert that is genuinely
+	// the one written below.
+	//
+	// A blob is readable only through something of the caller's own that names
+	// it — that is how one project is kept from reading another's schemas — so
+	// the snapshots recorded further down are what make these legible, not the
+	// insert.
+	before, after := table(text("id")), table(text("id"), text("channel"))
+	older, newer := storeSchema(ctx, t, pool, before), storeSchema(ctx, t, pool, after)
 
+	// Named and addressed for the test that asked for it. A shared name or
+	// host collides with anything a previous run left behind, and the two
+	// constraints — one endpoint per project, one name per project — each
+	// produce that collision on their own.
 	var instanceID int64
 	if err := pool.QueryRow(ctx, `
 		INSERT INTO schemaver.instance (project_id, name, host, credential_id)
-		VALUES ($1, 'review-probe', 'probe.invalid', $2) RETURNING id`,
-		projectID, credentialID).Scan(&instanceID); err != nil {
-		t.Skipf("create the probe server: %v", err)
+		VALUES ($1, $2, $3, $4) RETURNING id`,
+		projectID, "review-probe-"+t.Name(),
+		strings.ToLower(t.Name())+".probe.invalid", credentialID).Scan(&instanceID); err != nil {
+		// Fatal, not skipped. A fixture that cannot be built is a broken test,
+		// and skipping one reports success for a review flow that never ran.
+		t.Fatalf("create the probe server: %v", err)
 	}
 	t.Cleanup(func() {
 		bg := context.Background()
@@ -103,6 +123,11 @@ func TestProposeReviewApprove(t *testing.T) {
 			VALUES ($1, $2, true, $3) RETURNING id`,
 			instanceID, d.name, d.fingerprint).Scan(d.into); err != nil {
 			t.Fatalf("create %s: %v", d.name, err)
+		}
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO schemaver.snapshot (database_id, fingerprint, read_ms)
+			VALUES ($1, $2, 1)`, *d.into, d.fingerprint); err != nil {
+			t.Fatalf("record the snapshot for %s: %v", d.name, err)
 		}
 	}
 
