@@ -89,13 +89,33 @@ var ErrNotObserved = errors.New("one of these databases has not been read yet")
 // what a reviewer approved stays inspectable — and because approvals record the
 // fingerprint pair they concerned, superseding one silently withdraws its
 // approvals without anything having to invalidate them.
-func (s *Scope) GenerateMigration(ctx context.Context, actorID, requestID int64) (int64, error) {
+func (s *Scope) GenerateMigration(ctx context.Context, actorID, requestID int64) (id int64, err error) {
 	if err := s.requireWrite(); err != nil {
 		return 0, err
 	}
 
+	// Whatever went wrong is written onto the request before this returns.
+	//
+	// The page has had somewhere to show it since authored scripts arrived —
+	// `state_reason`, rendered as "this change could not be worked out" — and
+	// generation was the one path that never filled it. Both callers dropped
+	// the error and redirected, so a request that failed to generate looked
+	// exactly like one whose schemas already agreed. A merge conflict is the
+	// case where that matters most: it is not a defect and not a no-op, it is a
+	// question for a person, and it was arriving as silence.
+	defer func() {
+		if err == nil {
+			return
+		}
+		s.store.pool.Exec(ctx, `
+			UPDATE schemaver.change_request
+			   SET state_reason = $2, updated_at = now()
+			 WHERE id = $1 AND project_id = ANY($3)`,
+			requestID, err.Error(), s.projects)
+	}()
+
 	var fromFP, toFP *string
-	err := s.store.pool.QueryRow(ctx, `
+	err = s.store.pool.QueryRow(ctx, `
 		SELECT target.current_fingerprint, source.current_fingerprint
 		  FROM schemaver.change_request r
 		  JOIN schemaver.database target ON target.id = r.database_id

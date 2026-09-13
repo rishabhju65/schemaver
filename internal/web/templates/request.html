@@ -26,7 +26,9 @@
      unhelpful in exactly the case somebody needs help. Say what happened. */}}
 {{if $r.StateReason}}
 <p class="banner err"><b>This change could not be worked out.</b><br>
-<span class="fp">{{$r.StateReason}}</span></p>
+{{/* pre-wrap because a merge conflict names one object per line, and a reason
+     whose shape carries meaning must not be reflowed into a paragraph. */}}
+<span class="fp" style="white-space:pre-wrap">{{$r.StateReason}}</span></p>
 {{else}}
 <p class="banner warn">No migration yet. Either the two schemas already agree,
 or one of them has not been read.</p>
