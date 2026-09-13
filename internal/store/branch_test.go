@@ -231,7 +231,110 @@ func TestABranchShowsExactlyWhatDiverged(t *testing.T) {
 	}
 }
 
+// TestMergingABranchKeepsTheDatabasesOwnWork is D-027 with an exact ancestor.
+func TestMergingABranchKeepsTheDatabasesOwnWork(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	pool := mergeTestPool(ctx, t)
+	st := store.New(pool, nil)
+
+	projectID, userID, databaseID := branchFixture(ctx, t, pool, table(text("id")))
+	scope := st.ForProject(projectID)
+
+	id, err := scope.CutBranch(ctx, userID, databaseID, "branch-work", "")
+	if err != nil {
+		t.Fatalf("CutBranch: %v", err)
+	}
+	advance(ctx, t, pool, id, table(text("id"), text("channel")))
+
+	// Meanwhile the database grew a column of its own.
+	ours := table(text("id"), text("audit_ref"))
+	moveDatabase(ctx, t, pool, databaseID, ours)
+
+	m, err := scope.PlanBranchMerge(ctx, id, databaseID)
+	if err != nil {
+		t.Fatalf("PlanBranchMerge: %v", err)
+	}
+	if !m.Clean() {
+		t.Fatalf("different columns are not a conflict: %v", m.Conflicts)
+	}
+	if len(m.Apply) != 1 || !strings.Contains(m.Apply[0].Summary, "channel") {
+		t.Fatalf("the merge should apply only the branch's work, got %v", m.Apply)
+	}
+
+	requestID, err := scope.MergeBranch(ctx, userID, id, databaseID, "", "")
+	if err != nil {
+		t.Fatalf("MergeBranch: %v", err)
+	}
+
+	rows, err := pool.Query(ctx, `
+		SELECT st.sql, st.change_id FROM schemaver.migration_step st
+		  JOIN schemaver.migration m ON m.id = st.migration_id
+		 WHERE m.change_request_id = $1 AND m.superseded_at IS NULL
+		 ORDER BY st.ordinal`, requestID)
+	if err != nil {
+		t.Fatalf("read statements: %v", err)
+	}
+	defer rows.Close()
+	var statements int
+	for rows.Next() {
+		var sql, changeID string
+		if err := rows.Scan(&sql, &changeID); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		statements++
+		if strings.Contains(sql, "audit_ref") {
+			t.Errorf("the database's own column is being discarded: %s", sql)
+		}
+		// Generated statements name the change they serve. A written one says
+		// "authored" because that is all that can honestly be said of it.
+		if changeID == "authored" {
+			t.Errorf("a merged statement should name its change, got %q on %q",
+				changeID, sql)
+		}
+	}
+	if statements != 1 {
+		t.Errorf("expected one statement, got %d", statements)
+	}
+
+	// The request records where it came from, or the page cannot explain why
+	// there is no source database on a comparison.
+	var branchID *int64
+	pool.QueryRow(ctx, `SELECT branch_id FROM schemaver.change_request WHERE id = $1`,
+		requestID).Scan(&branchID)
+	if branchID == nil || *branchID != id {
+		t.Error("the request does not record the branch it came from")
+	}
+}
+
 // TestMergingABranchRefusesToPickASide: a disagreement is a question for a
+// person, and answering it silently loses the version nobody chose.
+func TestMergingABranchRefusesToPickASide(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	pool := mergeTestPool(ctx, t)
+	st := store.New(pool, nil)
+
+	projectID, userID, databaseID := branchFixture(ctx, t, pool, table(text("id")))
+	scope := st.ForProject(projectID)
+
+	id, err := scope.CutBranch(ctx, userID, databaseID, "conflicting", "")
+	if err != nil {
+		t.Fatalf("CutBranch: %v", err)
+	}
+	advance(ctx, t, pool, id, table(text("id"), text("note")))
+
+	ours := table(text("id"),
+		schema.Column{Name: "note", Type: "character varying(50)", Nullable: true})
+	moveDatabase(ctx, t, pool, databaseID, ours)
+
+	if _, err := scope.MergeBranch(ctx, userID, id, databaseID, "", ""); err == nil {
+		t.Fatal("merged across a conflict")
+	} else if !strings.Contains(err.Error(), "note") {
+		t.Errorf("the refusal should name the object in dispute, got %q", err)
+	}
+}
+
 // TestAClosedBranchTakesNoMoreWork.
 func TestAClosedBranchTakesNoMoreWork(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)

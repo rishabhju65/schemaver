@@ -187,6 +187,26 @@ func (s *Store) StoreSchema(ctx context.Context, sch *schema.Schema, fingerprint
 // approval gate, the rehearsal, execution and rollback all work on that shape
 // alone.
 func (s *Store) RecordDerivation(ctx context.Context, requestID int64, from, to schema.Version, result diff.Result, statements []string, weight int) (int64, error) {
+	// Every statement is attributed to "authored" because that is the truth
+	// about a written change: the text is the author's, and which of the
+	// classified changes each line accounts for is not recoverable from it.
+	steps := make([]Step, 0, len(statements))
+	for i, sql := range statements {
+		steps = append(steps, Step{Ordinal: i + 1, SQL: sql, ChangeID: "authored",
+			Transactional: !concurrent(sql)})
+	}
+	return s.recordMigration(ctx, requestID, from, to, result, steps, weight)
+}
+
+// recordMigration stores a migration and the statements that make it up.
+//
+// Shared by every route that produces one from statements already decided:
+// written changes, whose steps carry the author's own text, and branch merges,
+// whose steps are rendered from a change list and can name the change each one
+// serves. Both leave the request in review with the same shape behind it, which
+// is what lets the gate, the rehearsal, execution and rollback stay ignorant of
+// where a migration came from.
+func (s *Store) recordMigration(ctx context.Context, requestID int64, from, to schema.Version, result diff.Result, steps []Step, weight int) (int64, error) {
 	changesJSON, err := json.Marshal(result.Changes)
 	if err != nil {
 		return 0, fmt.Errorf("serialize changes: %w", err)
@@ -223,22 +243,19 @@ func (s *Store) RecordDerivation(ctx context.Context, requestID int64, from, to 
 		return 0, fmt.Errorf("store migration: %w", err)
 	}
 
-	forward := make([]Step, 0, len(statements))
-	for i, sql := range statements {
-		st := Step{Ordinal: i + 1, SQL: sql, ChangeID: "authored",
-			Transactional: !concurrent(sql)}
-		forward = append(forward, st)
+	for _, st := range steps {
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO schemaver.migration_step
-			    (migration_id, ordinal, sql, change_id, transactional)
-			VALUES ($1, $2, $3, $4, $5)`,
-			migrationID, st.Ordinal, st.SQL, st.ChangeID, st.Transactional); err != nil {
-			return 0, fmt.Errorf("store statement %d: %w", i+1, err)
+			    (migration_id, ordinal, sql, change_id, transactional, note)
+			VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''))`,
+			migrationID, st.Ordinal, st.SQL, st.ChangeID, st.Transactional,
+			st.Note); err != nil {
+			return 0, fmt.Errorf("store statement %d: %w", st.Ordinal, err)
 		}
 	}
 	if _, err := tx.Exec(ctx,
 		`UPDATE schemaver.migration SET plan_digest = $2 WHERE id = $1`,
-		migrationID, planDigest(forward, nil)); err != nil {
+		migrationID, planDigest(steps, nil)); err != nil {
 		return 0, fmt.Errorf("record the plan digest: %w", err)
 	}
 
