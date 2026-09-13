@@ -112,6 +112,13 @@ type RequestDetail struct {
 	// (D-012).
 	Revert []RevertStep
 
+	// AuthoredSQL is the script somebody wrote, where the change was written
+	// rather than derived from another database. Kept so it can be corrected:
+	// a script that would not apply produces no migration and therefore no
+	// statements to edit, and without this the only way past a typo is to
+	// abandon the request and write it again.
+	AuthoredSQL string
+
 	// Rollback is what undoing would run from where the database actually is,
 	// or nil when there is nothing to undo or nowhere to undo from. Computed
 	// rather than stored, because the answer depends on the live schema.
@@ -175,7 +182,8 @@ func (s *Scope) Request(ctx context.Context, id int64) (*RequestDetail, error) {
 		       m.id, m.from_fingerprint, m.to_fingerprint, m.generated_at,
 		       m.irreversible_reason,
 		       COALESCE(m.changes, '[]'::jsonb),
-		       COALESCE(NULLIF(m.rename_candidates, 'null'::jsonb), '[]'::jsonb)
+		       COALESCE(NULLIF(m.rename_candidates, 'null'::jsonb), '[]'::jsonb),
+		       COALESCE(r.authored_sql, '')
 		  FROM schemaver.change_request r
 		  JOIN schemaver.database db ON db.id = r.database_id
 		  LEFT JOIN schemaver.database src ON src.id = r.source_database_id
@@ -186,7 +194,7 @@ func (s *Scope) Request(ctx context.Context, id int64) (*RequestDetail, error) {
 		Scan(&d.ID, &d.Title, &d.Description, &d.State, &d.StateReason, &d.Author,
 			&d.Database, &d.Source, &d.CreatedAt,
 			&migrationID, &from, &to, &generatedAt, &irreversible,
-			&changesJSON, &renamesJSON)
+			&changesJSON, &renamesJSON, &d.AuthoredSQL)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, errors.New("no such change request")
 	}

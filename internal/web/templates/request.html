@@ -11,9 +11,37 @@
 {{if .Error}}<p class="banner err">{{.Error}}</p>{{end}}
 
 {{if not $r.MigrationID}}
-<p class="banner warn">No migration has been generated. Either the two schemas
-already agree, or one of them has not been read yet.</p>
-{{if .CanWrite}}
+{{/* The reason is recorded when the attempt fails — a syntax error, a table
+     that is not there, a cast the engine will not make. It used to be stored
+     and never shown, and this page guessed instead: "either the two schemas
+     already agree, or one of them has not been read yet", which is wrong and
+     unhelpful in exactly the case somebody needs help. Say what happened. */}}
+{{if $r.StateReason}}
+<p class="banner err"><b>This change could not be worked out.</b><br>
+<span class="fp">{{$r.StateReason}}</span></p>
+{{else}}
+<p class="banner warn">No migration yet. Either the two schemas already agree,
+or one of them has not been read.</p>
+{{end}}
+
+{{if $r.AuthoredSQL}}
+{{/* A script that will not apply produces no migration and so no statements to
+     edit. Without the script itself here, a typo would mean abandoning the
+     request and writing it again — and a typo is the most likely thing to be
+     wrong with a hand-written migration. */}}
+<h2 style="margin-top:22px">The script</h2>
+<p class="sub">Correct it and it is tried again. The title, the description and
+anything said on this page are kept.</p>
+<div class="card pad">
+  {{if $.CanWrite}}
+  <form method="post" action="/requests/{{$r.ID}}/revise">
+    <input type="hidden" name="csrf" value="{{$.CSRF}}">
+    <textarea name="sql" rows="12" spellcheck="false" class="script">{{$r.AuthoredSQL}}</textarea>
+    <p style="margin-top:10px"><button type="submit" style="width:auto">Try again</button></p>
+  </form>
+  {{else}}<pre>{{$r.AuthoredSQL}}</pre>{{end}}
+</div>
+{{else if .CanWrite}}
 <form method="post" action="/requests/{{$r.ID}}/act" style="display:inline">
   <input type="hidden" name="csrf" value="{{.CSRF}}">
   <input type="hidden" name="do" value="regenerate">

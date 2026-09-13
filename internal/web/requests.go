@@ -418,3 +418,30 @@ func (s *Server) readNow(w http.ResponseWriter, r *http.Request) {
 	}
 	http.Redirect(w, r, back, http.StatusSeeOther)
 }
+
+// revise replaces the script on a written change and has it worked out again.
+func (s *Server) revise(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "not a request id", http.StatusBadRequest)
+		return
+	}
+	if !checkCSRF(r) {
+		http.Error(w, "invalid form token; reload the page and try again",
+			http.StatusForbidden)
+		return
+	}
+	scope, serr := s.scoped(r)
+	if serr != nil {
+		http.Error(w, serr.Error(), http.StatusInternalServerError)
+		return
+	}
+	back := "/requests/" + strconv.FormatInt(id, 10)
+	if err := scope.ReviseAuthored(r.Context(), userFrom(r.Context()).ID, id,
+		r.FormValue("sql")); err != nil {
+		http.Redirect(w, r, back+"?error="+url.QueryEscape(err.Error()),
+			http.StatusSeeOther)
+		return
+	}
+	http.Redirect(w, r, back, http.StatusSeeOther)
+}

@@ -259,3 +259,72 @@ func (s *Store) FailDerivation(ctx context.Context, requestID int64, reason stri
 	}
 	return nil
 }
+
+// ReviseAuthored replaces the script on a written change and works out what it
+// does again.
+//
+// The reason this exists at all: a script that will not apply produces no
+// migration, and therefore no statements to edit. Without a way back to the
+// script itself, a typo means abandoning the request and writing it again,
+// losing the title, the description and any conversation attached to it — and
+// the most likely thing to be wrong with a hand-written migration is a typo.
+func (s *Scope) ReviseAuthored(ctx context.Context, actorID, requestID int64, sql string) error {
+	if err := s.requireWrite(); err != nil {
+		return err
+	}
+	if len(SplitStatements(sql)) == 0 {
+		return ErrNothingWritten
+	}
+
+	var state string
+	if err := s.store.pool.QueryRow(ctx, `
+		SELECT r.state FROM schemaver.change_request r
+		 WHERE r.id = $1 AND r.project_id = ANY($2)
+		   AND r.authored_sql IS NOT NULL`, requestID, s.projects).Scan(&state); err != nil {
+		return fmt.Errorf("load the written change: %w", err)
+	}
+	switch state {
+	case "READY_TO_EXECUTE", "EXECUTING", "COMPLETED", "CLOSED", "NEEDS_ATTENTION":
+		return ErrNotEditable
+	}
+
+	tx, err := s.store.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Any migration already derived described the previous script.
+	if _, err := tx.Exec(ctx, `
+		UPDATE schemaver.migration SET superseded_at = now()
+		 WHERE change_request_id = $1 AND superseded_at IS NULL`, requestID); err != nil {
+		return fmt.Errorf("supersede the previous migration: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE schemaver.change_request
+		   SET authored_sql = $2, state = 'INITIATED',
+		       state_reason = 'working out what these statements do',
+		       updated_at = now()
+		 WHERE id = $1`, requestID, sql); err != nil {
+		return fmt.Errorf("store the revised script: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO schemaver.job
+		    (kind, target_kind, target_id, weight, idempotency_key)
+		VALUES ('derive', 'request', $1, 1, $2)
+		ON CONFLICT (idempotency_key) DO UPDATE
+		   SET state = 'pending', run_after = now(), error = NULL,
+		       finished_at = NULL`,
+		requestID, fmt.Sprintf("derive:%d", requestID)); err != nil {
+		return fmt.Errorf("queue the derivation: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+
+	s.record(ctx, Info("request.revised",
+		"revised the script; working out what it does again").
+		By(actorID).
+		OnRequest(requestID))
+	return nil
+}
