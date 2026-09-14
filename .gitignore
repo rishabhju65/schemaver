@@ -18,3 +18,12 @@ neon.ts
 # Lockfile for the Claude Code skills loaded while working in this directory.
 # Tooling state, regenerated on demand, and nothing to do with the product.
 skills-lock.json
+
+# The decision log. Deliberately not in the repository: it is reviewed before it
+# changes, and it has stayed out of commits by nobody happening to add it —
+# which `git add -A` undoes the first time somebody runs it.
+decisions.md
+
+# Claude Code's own working files for this directory. Tooling state, not the
+# product.
+.claude/
