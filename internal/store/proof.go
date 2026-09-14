@@ -137,26 +137,72 @@ func (s *Store) RecordProof(ctx context.Context, migrationID int64, state, reaso
 		}
 	}
 
-	// A request waiting on its rehearsal moves on. It has already been approved
-	// by the time it gets here (D-022), so passing means ready to run; failing
-	// sends it back to its author, because a migration that does not produce
-	// the schema it declares is not something to put in front of production.
-	next, why := "READY_TO_EXECUTE", ""
-	switch state {
-	case "failed":
-		next, why = "CHANGES_REQUESTED", reason
-	case "unproven":
-		next, why = "READY_TO_EXECUTE", reason
+	// A failed rehearsal goes back to its author: a migration that does not
+	// produce the schema it declares is not something to put in front of
+	// production.
+	if state == "failed" {
+		if _, err := tx.Exec(ctx, `
+			UPDATE schemaver.change_request r
+			   SET state = 'CHANGES_REQUESTED', state_reason = NULLIF($2, ''),
+			       updated_at = now()
+			  FROM schemaver.migration m
+			 WHERE m.id = $1 AND r.id = m.change_request_id
+			   AND r.state = 'STAGE_SANITY'`, migrationID, reason); err != nil {
+			return fmt.Errorf("advance request: %w", err)
+		}
+		return tx.Commit(ctx)
 	}
-	if _, err := tx.Exec(ctx, `
-		UPDATE schemaver.change_request r
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit the proof: %w", err)
+	}
+
+	// A passing rehearsal used to move the request straight to
+	// READY_TO_EXECUTE, on the reasoning that it had been approved to get here
+	// and so passing meant ready to run. Approval is one of the gate's
+	// conditions and not the only one: the way back, a blocking review, an
+	// unanswered rename question and the environment below are all still
+	// outstanding at this point, and none of them is consulted here.
+	//
+	// So a request could read READY_TO_EXECUTE — "approved and queued" — while
+	// the gate beneath it on the same page said it could not run and named
+	// something nobody had done yet. Two independent answers to one question,
+	// and the louder of the two was the wrong one.
+	//
+	// The gate is asked instead. Where it agrees the state says so; where it
+	// does not, the request goes back to review carrying the gate's own reason,
+	// which is the thing a reader can act on.
+	return s.settleAfterProof(ctx, migrationID)
+}
+
+// settleAfterProof puts a rehearsed request where the gate says it belongs.
+//
+// Separate from the proof's own transaction because the gate reads the proof:
+// evaluated inside it, it would be deciding against the state of the world
+// before the rehearsal was recorded.
+func (s *Store) settleAfterProof(ctx context.Context, migrationID int64) error {
+	var requestID int64
+	if err := s.pool.QueryRow(ctx,
+		`SELECT change_request_id FROM schemaver.migration WHERE id = $1`,
+		migrationID).Scan(&requestID); err != nil {
+		return fmt.Errorf("find the request for migration %d: %w", migrationID, err)
+	}
+
+	gate, err := s.ApprovalStateFor(ctx, requestID)
+	if err != nil {
+		return fmt.Errorf("evaluate the gate: %w", err)
+	}
+
+	next, why := "IN_REVIEW", gate.Reason
+	if gate.Executable {
+		next, why = "READY_TO_EXECUTE", ""
+	}
+	if _, err := s.pool.Exec(ctx, `
+		UPDATE schemaver.change_request
 		   SET state = $2, state_reason = NULLIF($3, ''), updated_at = now()
-		  FROM schemaver.migration m
-		 WHERE m.id = $1 AND r.id = m.change_request_id
-		   AND r.state = 'STAGE_SANITY'`, migrationID, next, why); err != nil {
+		 WHERE id = $1 AND state = 'STAGE_SANITY'`, requestID, next, why); err != nil {
 		return fmt.Errorf("advance request: %w", err)
 	}
-	return tx.Commit(ctx)
+	return nil
 }
 
 // ExpectedAfter returns the fingerprint chain for a migration, or nil if it has

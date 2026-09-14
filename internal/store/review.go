@@ -112,6 +112,21 @@ var ErrNoMigration = errors.New("this request has no generated migration")
 
 // ApprovalState evaluates the execute gate for a change request.
 func (s *Scope) ApprovalState(ctx context.Context, requestID int64) (*ApprovalState, error) {
+	return s.store.approvalState(ctx, requestID, s.projects)
+}
+
+// ApprovalStateFor evaluates the gate without a scope, for the worker.
+//
+// A worker serves every project at once and holds none, exactly as the other
+// unscoped loaders do. Resolving the request id is what establishes which
+// project this belongs to, and nothing here is handed to a caller who could
+// have asked about a different one.
+func (s *Store) ApprovalStateFor(ctx context.Context, requestID int64) (*ApprovalState, error) {
+	return s.approvalState(ctx, requestID, nil)
+}
+
+// approvalState is the gate. projects filters by tenant; nil means unscoped.
+func (s *Store) approvalState(ctx context.Context, requestID int64, projects []int64) (*ApprovalState, error) {
 	var (
 		st          ApprovalState
 		authorID    *int64
@@ -121,7 +136,7 @@ func (s *Scope) ApprovalState(ctx context.Context, requestID int64) (*ApprovalSt
 		changesJSON []byte
 	)
 
-	err := s.store.pool.QueryRow(ctx, `
+	err := s.pool.QueryRow(ctx, `
 		SELECT m.id, m.from_fingerprint, m.to_fingerprint,
 		       -- The candidates this plan raises, answered or not. Which of
 		       -- them are still open is worked out below, where the answers can
@@ -141,9 +156,10 @@ func (s *Scope) ApprovalState(ctx context.Context, requestID int64) (*ApprovalSt
 		  -- The database this one follows. Absent where nothing precedes it, in
 		  -- which case there is no lower environment to have rehearsed anything.
 		  LEFT JOIN schemaver.database peer ON peer.id = d.expected_peer_id
-		 WHERE r.id = $1 AND r.project_id = ANY($2) AND m.superseded_at IS NULL
+		 WHERE r.id = $1 AND ($2::bigint[] IS NULL OR r.project_id = ANY($2))
+		   AND m.superseded_at IS NULL
 		 ORDER BY m.generated_at DESC
-		 LIMIT 1`, requestID, s.projects).
+		 LIMIT 1`, requestID, projects).
 		Scan(&st.MigrationID, &st.FromFingerprint, &st.ToFingerprint,
 			&renamesJSON, &authorID, &projectID, &st.ProofState, &st.ProofReason,
 			&st.PlanDigest, &st.RevertProofState, &st.RevertProofReason,
@@ -164,7 +180,7 @@ func (s *Scope) ApprovalState(ctx context.Context, requestID int64) (*ApprovalSt
 	if err := json.Unmarshal(renamesJSON, &candidates); err != nil {
 		return nil, fmt.Errorf("decode rename candidates: %w", err)
 	}
-	answered, err := s.store.answeredRenames(ctx, requestID)
+	answered, err := s.answeredRenames(ctx, requestID)
 	if err != nil {
 		return nil, err
 	}
@@ -203,7 +219,7 @@ func (s *Scope) ApprovalState(ctx context.Context, requestID int64) (*ApprovalSt
 	// behind without anything having to withdraw them; an edited one leaves
 	// them behind on a digest that no longer matches, which is the same
 	// mechanism applied to the case where the endpoints did not move.
-	rows, err := s.store.pool.Query(ctx, `
+	rows, err := s.pool.Query(ctx, `
 		SELECT COALESCE(reviewer_id, 0), reviewer_label, reviewer_role,
 		       decision, COALESCE(comment, ''), self_approved, decided_at,
 		       COALESCE(plan_digest, '') = $2 AS current
@@ -244,7 +260,7 @@ func (s *Scope) ApprovalState(ctx context.Context, requestID int64) (*ApprovalSt
 	}
 
 	if authorID != nil {
-		st.SoleAdmin, err = s.store.soleAdmin(ctx, projectID, *authorID)
+		st.SoleAdmin, err = s.soleAdmin(ctx, projectID, *authorID)
 		if err != nil {
 			return nil, err
 		}
@@ -502,7 +518,7 @@ func (s *Scope) Decide(ctx context.Context, requestID, reviewerID int64, verdict
 // get there. Where those two sets do not meet, everything this change carries
 // is already down there and whatever remains is the other side's own work,
 // which was never this migration's to deliver.
-func (s *Scope) peerHasTheWork(ctx context.Context, peerFP, targetFP string, changesJSON []byte) (bool, error) {
+func (s *Store) peerHasTheWork(ctx context.Context, peerFP, targetFP string, changesJSON []byte) (bool, error) {
 	var carried []diff.Change
 	if err := json.Unmarshal(changesJSON, &carried); err != nil {
 		return false, fmt.Errorf("decode this migration's changes: %w", err)
@@ -511,14 +527,19 @@ func (s *Scope) peerHasTheWork(ctx context.Context, peerFP, targetFP string, cha
 		return false, nil
 	}
 
-	peer, err := s.Blob(ctx, schema.Version(peerFP))
+	// Read straight from the blobs rather than through the scoped reader. The
+	// gate is evaluated by the worker as well as by a page, and which request
+	// this is has already established which project it belongs to — the same
+	// reasoning the rehearsal's own loader uses.
+	//
+	// Unreadable is treated as absent rather than as evidence: failing to read
+	// the peer's schema is not proof that a rehearsal happened, so the gate
+	// stays shut and the fingerprint message stands.
+	peer, err := s.schemaAt(ctx, peerFP)
 	if err != nil || peer == nil {
-		// Unreadable rather than absent: the peer's schema is stored whenever
-		// it has been observed, so failing to read it is not evidence that a
-		// rehearsal happened. Shut, and let the fingerprint message stand.
 		return false, nil
 	}
-	target, err := s.Blob(ctx, schema.Version(targetFP))
+	target, err := s.schemaAt(ctx, targetFP)
 	if err != nil || target == nil {
 		return false, nil
 	}
@@ -533,4 +554,19 @@ func (s *Scope) peerHasTheWork(ctx context.Context, peerFP, targetFP string, cha
 		}
 	}
 	return true, nil
+}
+
+// schemaAt reads a stored schema by fingerprint, unscoped.
+func (s *Store) schemaAt(ctx context.Context, fingerprint string) (*schema.Schema, error) {
+	var canonical []byte
+	if err := s.pool.QueryRow(ctx,
+		`SELECT canonical FROM schemaver.schema_blob WHERE fingerprint = $1`,
+		fingerprint).Scan(&canonical); err != nil {
+		return nil, err
+	}
+	var out schema.Schema
+	if err := json.Unmarshal(canonical, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }

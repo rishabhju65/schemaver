@@ -72,7 +72,7 @@ var stateMeaning = map[string]string{
 	"INITIATED":         "just opened; working out what it does",
 	"STAGE_SANITY":      "rehearsing against a throwaway copy",
 	"IN_REVIEW":         "waiting for somebody to read it",
-	"READY_TO_EXECUTE":  "approved and queued",
+	"READY_TO_EXECUTE":  "approved and ready to run",
 	"EXECUTING":         "applying statements to a database now",
 	"CHANGES_REQUESTED": "sent back to its author",
 	"FAILED":            "the run failed and the database is unchanged",
