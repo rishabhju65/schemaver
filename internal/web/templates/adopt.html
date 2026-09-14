@@ -1,0 +1,35 @@
+{{define "content"}}
+<h1>What else is on this server</h1>
+<p class="sub">Databases this project does not manage. Nothing here is tracked
+until you choose it — looking costs you nothing.</p>
+
+{{if .Error}}<p class="banner err">{{.Error}}</p>{{end}}
+
+{{if .Candidates}}
+<form method="post" action="/instances/{{.InstanceID}}/adopt">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <div class="card">
+    {{range .Candidates}}
+    <div class="change">
+      <span class="cls {{if .Connectable}}additive{{else}}destructive{{end}}">
+        {{if .Connectable}}reachable{{else}}no access{{end}}</span>
+      <div>
+        <label style="margin:0">
+          <input type="checkbox" name="adopt" value="{{.Name}}"
+            {{if not .Connectable}}disabled{{end}}>
+          <b>{{.Name}}</b>
+        </label><br>
+        <span class="fp">owner {{.Owner}} · {{.Encoding}}{{if .Size}} · {{.Size}} bytes{{end}}</span>
+        {{if not .Connectable}}<br><span class="fp">this server's credentials
+        cannot open it, so it could be added but never read</span>{{end}}
+      </div>
+    </div>
+    {{end}}
+  </div>
+  {{if .CanWrite}}<button type="submit" style="margin-top:14px">Manage the ones I ticked</button>{{end}}
+</form>
+{{else}}
+<div class="card"><div class="empty">Nothing here that this project does not
+already manage.</div></div>
+{{end}}
+{{end}}

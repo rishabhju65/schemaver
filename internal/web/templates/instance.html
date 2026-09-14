@@ -3,6 +3,12 @@
 <p class="sub"><code>{{.Instance.Host}}:{{.Instance.Port}}</code> as
 <code>{{.Instance.Username}}</code> · {{.Instance.Engine}} ·
 TLS {{.Instance.TLSMode}}</p>
+{{if .CanWrite}}
+<p><a class="btn secondary" href="/instances/{{.Instance.ID}}/adopt">What else is
+here</a>
+<span class="hint">Lists the databases on this server that the project does not
+manage, so you can pick from them. It creates nothing by itself.</span></p>
+{{end}}
 
 {{if .Error}}<p class="banner err">{{.Error}}</p>{{end}}
 {{if .Saved}}<p class="banner ok">Saved. Managed databases are read on the next

@@ -164,44 +164,40 @@ func (s *Store) SyncDatabases(ctx context.Context, instanceID int64, found []int
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	// Only databases somebody asked for.
+	//
+	// This used to insert a row for every database on the host. The intent was
+	// coverage — tell people what they have — and the result was a fleet of
+	// rows nobody wanted: the server's own `postgres`, another team's
+	// application, whatever else happened to share the machine. They arrived
+	// unmanaged, so nothing read them, which made them harmless and pointless
+	// at once; and one of them needed a hardcoded apology in the fleet view to
+	// explain what it was doing there.
+	//
+	// Enumerating a host is still worth doing and is still done — by
+	// Discoverable, on request, so somebody can look at what is there and
+	// choose. What changed is that looking no longer commits you to anything.
+	//
+	// So this reconciles what is already managed: a database that has moved,
+	// grown or gone is updated, and one that was never adopted is left alone.
 	names := make([]string, len(found))
 	for i, db := range found {
 		names[i] = db.Name
-		var inserted bool
-		if err := tx.QueryRow(ctx, `
-			-- Labelled as the most guarded environment the project has, which
-			-- is the highest-ranked one. Discovery cannot know what a database
-			-- is for, and of the two ways to be wrong only one is dangerous:
-			-- calling staging production costs ceremony somebody removes,
-			-- while calling production staging lets a change reach it without
-			-- passing through anything (D-024).
-			--
-			-- Read by rank rather than by the name "production", because rank
-			-- is what the checks compare and a project may rename its
-			-- environments.
-			INSERT INTO schemaver.database
-			    (instance_id, name, owner, encoding, size_bytes, last_seen,
-			     environment_id)
-			VALUES ($1, $2, $3, $4, $5, now(), (
-			    SELECT e.id FROM schemaver.environment e
-			      JOIN schemaver.instance i ON i.id = $1
-			     WHERE e.project_id = i.project_id
-			     ORDER BY e.rank DESC LIMIT 1))
-			ON CONFLICT (instance_id, name) DO UPDATE
-			   SET owner = EXCLUDED.owner,
-			       encoding = EXCLUDED.encoding,
-			       size_bytes = EXCLUDED.size_bytes,
-			       last_seen = now(),
-			       archived_at = NULL
-			RETURNING (xmax = 0)`,
-			instanceID, db.Name, db.Owner, db.Encoding, db.SizeBytes).Scan(&inserted); err != nil {
-			return 0, 0, fmt.Errorf("upsert database %q: %w", db.Name, err)
+		tag, err := tx.Exec(ctx, `
+			UPDATE schemaver.database
+			   SET owner = $3, encoding = $4, size_bytes = $5,
+			       last_seen = now(), archived_at = NULL
+			 WHERE instance_id = $1 AND name = $2`,
+			instanceID, db.Name, db.Owner, db.Encoding, db.SizeBytes)
+		if err != nil {
+			return 0, 0, fmt.Errorf("refresh database %q: %w", db.Name, err)
 		}
-		if inserted {
-			added++
-		}
+		added += int(tag.RowsAffected())
 	}
 
+	// A database we manage that is no longer on the host. Archived rather than
+	// deleted: its snapshots, change requests and history are the record of
+	// something that existed, and that stays true after it stops.
 	tag, err := tx.Exec(ctx, `
 		UPDATE schemaver.database SET archived_at = now()
 		WHERE instance_id = $1 AND archived_at IS NULL AND NOT (name = ANY($2))`,

@@ -179,7 +179,7 @@ func TestPopulatedFleetStillOffersOnboarding(t *testing.T) {
 	// /instances on every page, so matching the path would pass whether or not
 	// the page offered anything at all — which is how the first version of this
 	// test passed against the very regression it was written for.
-	if !strings.Contains(out.String(), "Add databases") {
+	if !strings.Contains(out.String(), "Add a database") {
 		t.Error("a fleet with databases in it offers no way to add another; " +
 			"onboarding is not a first-run task")
 	}

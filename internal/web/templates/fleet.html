@@ -6,10 +6,11 @@
      every deployment past its first five minutes, and exactly when somebody
      wants to add the second one. Onboarding is not a first-run task. */}}
 {{if .CanWrite}}
-<p><a class="btn" href="/instances">Add databases</a>
-<span class="hint">Databases are reached through the server they live on:
-register one and schemaver lists what it holds, then you choose which to
-manage.</span></p>
+<p><a class="btn" href="/databases/new">Add a database</a>
+<a class="btn secondary" href="/instances">Servers</a>
+<span class="hint">A database is the thing you manage. The server it lives on is
+recorded with it, and a server you have already added can be picked from a list
+rather than typed again.</span></p>
 {{else if .OrgWide}}
 {{/* The organisation-wide view is deliberately read-only, and silence here
      reads as a missing feature rather than as a restriction — the same mistake

@@ -387,13 +387,13 @@ func (w *Worker) discover(ctx context.Context, instanceID int64) error {
 	if err != nil {
 		return err
 	}
-	added, archived, err := w.store.SyncDatabases(ctx, instanceID, found)
+	refreshed, archived, err := w.store.SyncDatabases(ctx, instanceID, found)
 	if err != nil {
 		return err
 	}
-	if added > 0 || archived > 0 {
-		w.log.Info("instance databases changed",
-			"instance", instanceID, "added", added, "archived", archived)
+	if archived > 0 {
+		w.log.Info("databases no longer on this server",
+			"instance", instanceID, "archived", archived, "refreshed", refreshed)
 	}
 	return nil
 }

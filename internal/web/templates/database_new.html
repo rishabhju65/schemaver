@@ -1,0 +1,61 @@
+{{define "content"}}
+<h1>Add a database</h1>
+<p class="sub">One database, named by you. The server it lives on is recorded
+too — databases sharing a host share its connection limit — but a server on its
+own manages nothing.</p>
+
+{{if .Error}}<p class="banner err">{{.Error}}</p>{{end}}
+
+<div class="card pad" style="max-width:620px">
+<form method="post" action="/databases/new">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+
+  <label>Server
+    <select name="server" onchange="document.getElementById('conn').style.display =
+      this.value === 'new' ? 'block' : 'none'">
+      {{range .Servers}}
+      <option value="{{.ID}}" {{if eq (printf "%d" .ID) $.Form.server}}selected{{end}}>
+        {{.Name}} — {{.Host}}:{{.Port}} ({{.Managed}} managed)
+      </option>
+      {{end}}
+      <option value="new" {{if not .Servers}}selected{{end}}>a server not listed here…</option>
+    </select>
+  </label>
+  <span class="hint">Choosing one you already have reuses its credentials, so
+  adding a second database on the same host does not mean typing a password
+  again.</span>
+
+  <label>Database <input name="database" required value="{{.Form.database}}"
+    placeholder="shop_prod"></label>
+
+  <label>Environment
+    <select name="environment">
+      {{range .Environments}}
+      <option value="{{.ID}}" {{if eq (printf "%d" .ID) $.Form.environment}}selected{{end}}>{{.Name}}</option>
+      {{end}}
+    </select>
+  </label>
+  <span class="hint">Production unless you say otherwise. The label decides
+  whether a promotion link points the right way, and of the two ways to be wrong
+  only one is dangerous — calling staging production costs ceremony somebody
+  removes, calling production staging lets a change reach it without passing
+  through anything.</span>
+
+  <div id="conn" style="display:{{if .Servers}}none{{else}}block{{end}}">
+    <label>Call the server <input name="name" value="{{.Form.name}}"
+      placeholder="optional — defaults to host:port"></label>
+    <label>Host <input name="host" value="{{.Form.host}}" placeholder="db.example.com"></label>
+    <label>Port <input name="port" value="{{.Form.port}}"></label>
+    <label>Role <input name="username" value="{{.Form.username}}"></label>
+    <label>Password <input name="password" type="password"></label>
+    <label>TLS
+      <select name="tls_mode">
+        {{range .TLSModes}}<option value="{{.}}" {{if eq . $.Form.tls_mode}}selected{{end}}>{{.}}</option>{{end}}
+      </select>
+    </label>
+  </div>
+
+  <button type="submit" style="margin-top:16px">Add it</button>
+</form>
+</div>
+{{end}}
