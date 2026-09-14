@@ -82,6 +82,26 @@ const notSystem = `
 	  AND n.nspname NOT LIKE 'pg\_temp\_%'
 	  AND n.nspname NOT LIKE 'pg\_toast\_temp\_%'`
 
+// A namespace is never filtered for belonging to an extension, and the reason
+// is that the question cannot be asked.
+//
+// There used to be a filter here of the same shape as the ones below, looking
+// for a pg_depend row with classid pg_namespace and deptype 'e'. That row does
+// not exist. PostgreSQL records the relationship the other way round and with a
+// different type — classid pg_extension, refclassid pg_namespace, deptype 'n' —
+// and it records it identically whether the extension created the schema itself
+// (control-file `schema =`) or was installed into one somebody else had made.
+// The two cases are indistinguishable in the catalogue, so a filter separating
+// them cannot be written.
+//
+// PostgreSQL's own answer settles which way to be wrong. A schema an extension
+// creates survives DROP EXTENSION: the engine does not consider it owned, and
+// neither should this. Its *contents* are extension-owned and are filtered by
+// the checks below, which do match — so what remains in the model is an empty
+// namespace and anything the user put in it, which is exactly right.
+//
+// A namespace somebody does not want watched is excluded by saying so, not
+// guessed at from a dependency graph that does not hold the answer.
 func extensionOwned(class, oid string) string {
 	return fmt.Sprintf(`NOT EXISTS (
 		SELECT 1 FROM pg_depend dep
@@ -91,7 +111,6 @@ func extensionOwned(class, oid string) string {
 // Pre-built forms of the same filter, so probe.go can concatenate them into a
 // package-level string constant.
 var (
-	extensionOwnedNS         = extensionOwned("pg_namespace", "n.oid")
 	extensionOwnedClass      = extensionOwned("pg_class", "c.oid")
 	extensionOwnedIndex      = extensionOwned("pg_class", "ic.oid")
 	extensionOwnedConstraint = extensionOwned("pg_constraint", "con.oid")
@@ -168,7 +187,7 @@ func readNamespaces(ctx context.Context, q Querier) (map[string]schema.Namespace
 		FROM pg_namespace n
 		LEFT JOIN pg_description d
 		  ON d.objoid = n.oid AND d.classoid = 'pg_namespace'::regclass
-		WHERE `+notSystem+` AND `+extensionOwned("pg_namespace", "n.oid")+`
+		WHERE `+notSystem+`
 		ORDER BY n.nspname`)
 	if err != nil {
 		return nil, nil, fmt.Errorf("read namespaces: %w", err)

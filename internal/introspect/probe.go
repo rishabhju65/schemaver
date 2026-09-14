@@ -75,7 +75,7 @@ SELECT COALESCE(md5(string_agg(x, E'\n' ORDER BY x)), '') FROM (
     FROM pg_namespace n
     LEFT JOIN pg_description d
       ON d.objoid = n.oid AND d.classoid = 'pg_namespace'::regclass
-    WHERE ` + notSystem + ` AND ` + extensionOwnedNS + `
+    WHERE ` + notSystem + `
 
     UNION ALL
     SELECT concat_ws(':', 'rel', n.nspname, c.relname, c.relkind,
