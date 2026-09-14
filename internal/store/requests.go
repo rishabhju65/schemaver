@@ -92,6 +92,15 @@ type RequestDetail struct {
 	IrreversibleReason string
 	GeneratedAt        time.Time
 
+	// Sizes is what each table on the target database costs to touch, keyed by
+	// qualified name. Kept apart from the schema for the reason it is stored
+	// apart: a table growing is not a schema change.
+	Sizes map[string]TableSize
+
+	// DatabaseID is the target, carried so the page can read what that database
+	// costs without finding it again by name.
+	DatabaseID int64
+
 	// Objects is which tables, enums and sequences this change touches, and
 	// ObjectSummary counts them. Asked before anything else — "what is this a
 	// change to" — and answered badly by a list of statements.
@@ -189,7 +198,7 @@ func (s *Scope) Request(ctx context.Context, id int64) (*RequestDetail, error) {
 	err := s.store.pool.QueryRow(ctx, `
 		SELECT r.id, r.title, COALESCE(r.description, ''), r.state,
 		       COALESCE(r.state_reason, ''), COALESCE(u.email, 'removed user'),
-		       db.name, COALESCE(src.name, ''), r.created_at,
+		       db.name, db.id, COALESCE(src.name, ''), r.created_at,
 		       m.id, m.from_fingerprint, m.to_fingerprint, m.generated_at,
 		       m.irreversible_reason, m.merge_base,
 		       COALESCE(br.name, ''), COALESCE(r.branch_id, 0),
@@ -207,7 +216,7 @@ func (s *Scope) Request(ctx context.Context, id int64) (*RequestDetail, error) {
 		         ON m.change_request_id = r.id AND m.superseded_at IS NULL
 		 WHERE r.id = $1 AND r.project_id = ANY($2)`, id, s.projects).
 		Scan(&d.ID, &d.Title, &d.Description, &d.State, &d.StateReason, &d.Author,
-			&d.Database, &d.Source, &d.CreatedAt,
+			&d.Database, &d.DatabaseID, &d.Source, &d.CreatedAt,
 			&migrationID, &from, &to, &generatedAt, &irreversible, &mergeBase,
 			&d.Branch, &d.BranchID,
 			&changesJSON, &renamesJSON, &d.AuthoredSQL,
@@ -225,6 +234,9 @@ func (s *Scope) Request(ctx context.Context, id int64) (*RequestDetail, error) {
 		d.GeneratedAt = *generatedAt
 		if irreversible != nil {
 			d.IrreversibleReason = *irreversible
+		}
+		if sizes, err := s.Sizes(ctx, d.DatabaseID); err == nil {
+			d.Sizes = sizes
 		}
 		// Derived from the two ends rather than folded out of ByRisk: the
 		// change list says what happens, and which objects are involved is a

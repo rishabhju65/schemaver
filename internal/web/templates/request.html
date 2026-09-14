@@ -130,6 +130,33 @@ anything said on this page are kept.</p>
 </div>
 {{end}}
 
+{{with $r.Costly}}
+{{/* What a change does, against what it will do it to. The classification says
+     a statement rewrites a table or takes a heavy lock; it cannot say whether
+     that is a moment or an afternoon, because that depends on how much is
+     there. Only the classes where it matters, and only where the table is
+     substantial — saying this about every added column would train somebody to
+     stop reading it by the time it was true. */}}
+<div class="banner warn" style="margin-top:18px">
+  <b>This touches {{len .}} table(s) where the size decides the cost.</b>
+  <div style="margin-top:8px">
+  {{range .}}
+    <div class="change" style="padding-left:0">
+      <span class="cls {{.Change.Class}}">{{.Change.Class}}</span>
+      <div>{{.Change.Summary}}<br>
+        <span class="fp">{{if .Known}}{{.Size.Describe}}{{else}}nothing measured
+        for this table — it has not been read since sizes were recorded, or this
+        change is what creates it{{end}}</span></div>
+    </div>
+  {{end}}
+  </div>
+  <span class="hint">Measured from the catalogue at the last read, not now. A
+  rehearsal against a throwaway copy proves this produces the schema it claims
+  and holds no data, so it says nothing about how long the real one will
+  take.</span>
+</div>
+{{end}}
+
 {{if $r.IrreversibleReason}}
 <p class="banner err"><b>Irreversible.</b> {{$r.IrreversibleReason}}. Surfaced
 now, while the choice is still open — not when it is needed.</p>

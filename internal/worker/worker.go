@@ -490,6 +490,20 @@ func (w *Worker) read(ctx context.Context, t *store.Target) error {
 	if err != nil {
 		return err
 	}
+
+	// What each table costs to touch, refreshed alongside the schema and kept
+	// apart from it. Read from the catalogue, so it scans nothing and costs the
+	// same on a terabyte as on an empty database — which is why it can run on
+	// every full read rather than being a thing somebody asks for.
+	//
+	// A failure here is logged and not returned: the schema is the observation,
+	// and losing it because a size could not be read would be trading the
+	// answer for the annotation.
+	if sizes, err := introspect.Sizes(ctx, conn); err != nil {
+		w.log.Warn("could not read table sizes", "database", t.DatabaseID, "error", err)
+	} else if err := w.store.RecordSizes(ctx, t.DatabaseID, sizes); err != nil {
+		w.log.Warn("could not record table sizes", "database", t.DatabaseID, "error", err)
+	}
 	if changed {
 		w.log.Info("schema changed",
 			"database", t.Name, "version", fingerprint.Short())
