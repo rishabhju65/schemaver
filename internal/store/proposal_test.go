@@ -189,23 +189,12 @@ func TestProposeReviewApprove(t *testing.T) {
 	if state.Executable {
 		t.Error("executable with no way back written")
 	}
-	if state.RevertWritten {
-		t.Error("a generated migration arrived with a revert; nothing should generate one")
-	}
 	t.Logf("gate closed on the missing revert: %s", state.Reason)
-
-	if err := scope.WriteRevert(ctx, userID, migrationID,
-		"ALTER TABLE public.orders DROP COLUMN channel;"); err != nil {
-		t.Fatalf("WriteRevert: %v", err)
-	}
 
 	// Stand in for the worker, which is not running here. Both halves: the gate
 	// wants the migration rehearsed and the way back shown to lead back.
 	if err := st.RecordProof(ctx, migrationID, "passed", "", nil); err != nil {
 		t.Fatalf("RecordProof: %v", err)
-	}
-	if err := st.RecordRevertProof(ctx, migrationID, "passed", ""); err != nil {
-		t.Fatalf("RecordRevertProof: %v", err)
 	}
 
 	// Before approval the gate must still be shut, and it must say why.
@@ -259,10 +248,6 @@ func TestProposeReviewApprove(t *testing.T) {
 	}
 	if state.Executable {
 		t.Error("the approval survived regeneration; evidence must expire with the migration")
-	}
-	if state.RevertWritten {
-		t.Error("the regenerated migration kept the previous revert; a way back " +
-			"written for other statements is not a way back from these")
 	}
 	t.Logf("after regeneration the gate is shut again: %s", state.Reason)
 }

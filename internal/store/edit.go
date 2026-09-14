@@ -18,7 +18,7 @@ var ErrNotEditable = errors.New(
 // ErrNoSuchStatement is returned when an edit names a statement that is not there.
 var ErrNoSuchStatement = errors.New("no such statement in this migration")
 
-// EditStatement replaces the SQL of one statement, forward or revert.
+// EditStatement replaces the SQL of one statement.
 //
 // Only an administrator, and only while the migration is still under review.
 // The generator gets things wrong — a cast with no USING clause, a change it
@@ -31,7 +31,7 @@ var ErrNoSuchStatement = errors.New("no such statement in this migration")
 // anything having to go looking for them; the proof is reset for the same
 // reason, because a migration whose statements have changed has not been proven
 // whatever was established about the statements it used to hold.
-func (s *Scope) EditStatement(ctx context.Context, actorID, migrationID int64, revert bool, ordinal int, sql string) error {
+func (s *Scope) EditStatement(ctx context.Context, actorID, migrationID int64, ordinal int, sql string) error {
 	if err := s.requireWrite(); err != nil {
 		return err
 	}
@@ -68,9 +68,6 @@ func (s *Scope) EditStatement(ctx context.Context, actorID, migrationID int64, r
 	}
 
 	table := "schemaver.migration_step"
-	if revert {
-		table = "schemaver.migration_revert_step"
-	}
 
 	tx, err := s.store.pool.Begin(ctx)
 	if err != nil {
@@ -96,12 +93,10 @@ func (s *Scope) EditStatement(ctx context.Context, actorID, migrationID int64, r
 
 	// Only the forward statements have a proven fingerprint chain, and it
 	// described the statements as they were.
-	if !revert {
-		if _, err := tx.Exec(ctx, `
-			UPDATE schemaver.migration_step SET expected_after = NULL
-			 WHERE migration_id = $1`, migrationID); err != nil {
-			return fmt.Errorf("clear the fingerprint chain: %w", err)
-		}
+	if _, err := tx.Exec(ctx, `
+		UPDATE schemaver.migration_step SET expected_after = NULL
+		 WHERE migration_id = $1`, migrationID); err != nil {
+		return fmt.Errorf("clear the fingerprint chain: %w", err)
 	}
 
 	digest, err := recomputeDigest(ctx, tx, migrationID)
@@ -142,9 +137,6 @@ func (s *Scope) EditStatement(ctx context.Context, actorID, migrationID int64, r
 	}
 
 	which := "statement"
-	if revert {
-		which = "revert statement"
-	}
 	s.record(ctx, Warn("statement.edited", fmt.Sprintf(
 		"%s %d edited by hand; approvals withdrawn and the migration must be "+
 			"proven again", which, ordinal)).
@@ -165,15 +157,7 @@ func recomputeDigest(ctx context.Context, tx pgx.Tx, migrationID int64) (string,
 	if err != nil {
 		return "", err
 	}
-	revert, err := digestSteps(ctx, tx, "schemaver.migration_revert_step", migrationID)
-	if err != nil {
-		return "", err
-	}
-	revertSteps := make([]RevertStep, len(revert))
-	for i, st := range revert {
-		revertSteps[i] = RevertStep{Ordinal: st.Ordinal, SQL: st.SQL}
-	}
-	return planDigest(forward, revertSteps), nil
+	return planDigest(forward), nil
 }
 
 func digestSteps(ctx context.Context, tx pgx.Tx, table string, migrationID int64) ([]Step, error) {
@@ -198,194 +182,4 @@ func digestSteps(ctx context.Context, tx pgx.Tx, table string, migrationID int64
 // concurrent reports a statement that refuses to run inside a transaction.
 func concurrent(sql string) bool {
 	return strings.Contains(strings.ToUpper(sql), "CONCURRENTLY")
-}
-
-// WriteRevert replaces the way back with what somebody has written.
-//
-// Taken as one block and split on statement boundaries rather than edited a
-// statement at a time. Somebody writing a rollback is writing a script: they
-// think in whole sequences, paste from an editor, and reorder freely, and
-// making them do that a box at a time would be the interface fighting the task.
-//
-// Anyone who can change the request may write it — this is authoring, not
-// approving. Like every edit it recomputes the plan digest, so writing or
-// rewriting a revert withdraws the approvals that were given for the previous
-// one and sends the migration back to be proven.
-func (s *Scope) WriteRevert(ctx context.Context, actorID, migrationID int64, sql string) error {
-	if err := s.requireWrite(); err != nil {
-		return err
-	}
-
-	var projectID, requestID int64
-	var state string
-	err := s.store.pool.QueryRow(ctx, `
-		SELECT r.project_id, r.id, r.state
-		  FROM schemaver.migration m
-		  JOIN schemaver.change_request r ON r.id = m.change_request_id
-		 WHERE m.id = $1 AND r.project_id = ANY($2) AND m.superseded_at IS NULL`,
-		migrationID, s.projects).Scan(&projectID, &requestID, &state)
-	if err != nil {
-		return fmt.Errorf("load migration: %w", err)
-	}
-	switch state {
-	case "READY_TO_EXECUTE", "EXECUTING", "COMPLETED", "CLOSED", "NEEDS_ATTENTION":
-		return ErrNotEditable
-	}
-
-	statements := SplitStatements(sql)
-
-	tx, err := s.store.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("begin: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	// Replaced wholesale rather than merged. A revert is one script, and
-	// reconciling a rewrite against the statements it replaced would be
-	// guessing at an intent the author has already expressed plainly.
-	if _, err := tx.Exec(ctx,
-		`DELETE FROM schemaver.migration_revert_step WHERE migration_id = $1`,
-		migrationID); err != nil {
-		return fmt.Errorf("clear the previous revert: %w", err)
-	}
-	for i, st := range statements {
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO schemaver.migration_revert_step
-			    (migration_id, ordinal, sql, change_id, transactional)
-			VALUES ($1, $2, $3, 'revert', $4)`,
-			migrationID, i+1, st, !concurrent(st)); err != nil {
-			return fmt.Errorf("store revert statement %d: %w", i+1, err)
-		}
-	}
-
-	digest, err := recomputeDigest(ctx, tx, migrationID)
-	if err != nil {
-		return err
-	}
-	authored := len(statements) > 0
-	if _, err := tx.Exec(ctx, `
-		UPDATE schemaver.migration
-		   SET plan_digest = $2,
-		       proof_state = 'pending', proof_reason = NULL, proved_at = NULL,
-		       revert_proof_state = 'pending', revert_proof_reason = NULL,
-		       revert_authored_at = CASE WHEN $3 THEN now() END,
-		       revert_author_id = CASE WHEN $3 THEN $4::bigint END,
-		       -- Writing one answers the question the other way, and holding
-		       -- both is forbidden: a script beside "there is no way back" is
-		       -- one somebody might run.
-		       no_revert_reason = NULL, no_revert_by = NULL, no_revert_at = NULL
-		 WHERE id = $1`, migrationID, digest, authored, actorID); err != nil {
-		return fmt.Errorf("record the revert: %w", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit: %w", err)
-	}
-
-	what := fmt.Sprintf("wrote a revert of %d statement(s)", len(statements))
-	if !authored {
-		what = "removed the revert"
-	}
-	s.record(ctx, Warn("revert.written", what+
-		"; approvals withdrawn and the migration must be proven again").
-		By(actorID).
-		OnRequest(requestID).
-		OnMigration(migrationID))
-	return nil
-}
-
-// DeclareIrreversible records that a change cannot be undone, and why.
-//
-// The alternative to writing a revert rather than a way of skipping it. One of
-// the two is required, because the point of D-012 was that somebody confronts
-// reversibility while they can still choose differently — and "this destroys
-// the column's contents and no DDL brings them back" is a better answer to that
-// than an ADD COLUMN written to satisfy a gate.
-//
-// The reason is shown wherever the way back would have been, so a reviewer
-// approves knowing there is none rather than discovering it during an incident.
-func (s *Scope) DeclareIrreversible(ctx context.Context, actorID, migrationID int64, reason string) error {
-	if err := s.requireWrite(); err != nil {
-		return err
-	}
-	if strings.TrimSpace(reason) == "" {
-		return errors.New(
-			"say why this cannot be undone; a reviewer approving it is agreeing " +
-				"to that, and needs to know what they are agreeing to")
-	}
-
-	var projectID, requestID int64
-	var state string
-	if err := s.store.pool.QueryRow(ctx, `
-		SELECT r.project_id, r.id, r.state
-		  FROM schemaver.migration m
-		  JOIN schemaver.change_request r ON r.id = m.change_request_id
-		 WHERE m.id = $1 AND r.project_id = ANY($2) AND m.superseded_at IS NULL`,
-		migrationID, s.projects).Scan(&projectID, &requestID, &state); err != nil {
-		return fmt.Errorf("load migration: %w", err)
-	}
-	switch state {
-	case "READY_TO_EXECUTE", "EXECUTING", "COMPLETED", "CLOSED", "NEEDS_ATTENTION":
-		return ErrNotEditable
-	}
-
-	tx, err := s.store.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("begin: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	// Any revert already written is removed rather than left beside the
-	// declaration. The constraint forbids holding both, and more to the point a
-	// statement kept next to "there is no way back" is one somebody might run.
-	if _, err := tx.Exec(ctx,
-		`DELETE FROM schemaver.migration_revert_step WHERE migration_id = $1`,
-		migrationID); err != nil {
-		return fmt.Errorf("clear the previous revert: %w", err)
-	}
-
-	digest, err := recomputeDigest(ctx, tx, migrationID)
-	if err != nil {
-		return err
-	}
-	if _, err := tx.Exec(ctx, `
-		UPDATE schemaver.migration
-		   SET no_revert_reason = $2, no_revert_by = $3, no_revert_at = now(),
-		       revert_authored_at = NULL, revert_author_id = NULL,
-		       revert_proof_state = 'unproven',
-		       revert_proof_reason = 'declared irreversible; there is nothing to prove',
-		       plan_digest = $4,
-		       proof_state = 'pending', proof_reason = NULL, proved_at = NULL
-		 WHERE id = $1`, migrationID, reason, actorID, digest); err != nil {
-		return fmt.Errorf("record the declaration: %w", err)
-	}
-
-	// Like every other change to the plan, this withdraws approvals: somebody
-	// who approved a migration that had a way back did not approve this one.
-	if _, err := tx.Exec(ctx, `
-		UPDATE schemaver.change_request
-		   SET state = 'STAGE_SANITY',
-		       state_reason = 'declared irreversible; proving the migration again',
-		       updated_at = now()
-		 WHERE id = $1`, requestID); err != nil {
-		return fmt.Errorf("advance request: %w", err)
-	}
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO schemaver.job
-		    (kind, target_kind, target_id, weight, idempotency_key)
-		VALUES ('prove', 'migration', $1, 1, $2)
-		ON CONFLICT (idempotency_key) DO UPDATE
-		   SET state = 'pending', run_after = now(), error = NULL, finished_at = NULL`,
-		migrationID, fmt.Sprintf("prove:%d", migrationID)); err != nil {
-		return fmt.Errorf("re-queue the proof: %w", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit: %w", err)
-	}
-
-	s.record(ctx, Warn("revert.declined",
-		"declared irreversible: "+reason).
-		By(actorID).
-		OnRequest(requestID).
-		OnMigration(migrationID))
-	return nil
 }

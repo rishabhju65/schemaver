@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -112,11 +111,6 @@ type RequestDetail struct {
 	// queued. What happened inside an execution belongs to that execution.
 	Timeline []Activity
 
-	// Revert is the generated way back, read at approval time so the cost of
-	// undoing is known before the change runs rather than during the incident
-	// (D-012).
-	Revert []RevertStep
-
 	// Targets are the databases this change reaches, in promotion order, and
 	// how far it has got along them.
 	Targets []RequestTarget
@@ -124,10 +118,6 @@ type RequestDetail struct {
 	// ClosedAt and ClosedBy record who settled this request and when.
 	ClosedAt *time.Time
 	ClosedBy string
-
-	// NoRevertReason is why this change cannot be undone, where somebody said so
-	// instead of writing a revert.
-	NoRevertReason string
 
 	// MergeBase is where the two databases last agreed, set only when this
 	// migration is a merge. Kept is what the target database did on its own
@@ -153,27 +143,6 @@ type RequestDetail struct {
 	// statements to edit, and without this the only way past a typo is to
 	// abandon the request and write it again.
 	AuthoredSQL string
-
-	// Rollback is what undoing would run from where the database actually is,
-	// or nil when there is nothing to undo or nowhere to undo from. Computed
-	// rather than stored, because the answer depends on the live schema.
-	Rollback *Rollback
-	// RollbackRefusal explains why no rollback is offered, when the reason is
-	// worth saying rather than simply hiding the button.
-	RollbackRefusal string
-}
-
-// HasRevert reports that somebody has written a way back.
-func (d *RequestDetail) HasRevert() bool { return len(d.Revert) > 0 }
-
-// RevertSQL is the way back as one script, for editing. Round-trips through
-// the same splitting it came from, so what somebody sees is what is stored.
-func (d *RequestDetail) RevertSQL() string {
-	parts := make([]string, 0, len(d.Revert))
-	for _, st := range d.Revert {
-		parts = append(parts, st.SQL)
-	}
-	return strings.Join(parts, "\n")
 }
 
 // Execution is the most recent attempt, or nil if there has never been one.
@@ -219,7 +188,7 @@ func (s *Scope) Request(ctx context.Context, id int64) (*RequestDetail, error) {
 		       COALESCE(br.name, ''), COALESCE(r.branch_id, 0),
 		       COALESCE(m.changes, '[]'::jsonb),
 		       COALESCE(NULLIF(m.rename_candidates, 'null'::jsonb), '[]'::jsonb),
-		       COALESCE(r.authored_sql, ''), COALESCE(m.no_revert_reason, ''),
+		       COALESCE(r.authored_sql, ''),
 		       r.closed_at, COALESCE(cb.email, '')
 		  FROM schemaver.change_request r
 		  JOIN schemaver.database db ON db.id = r.database_id
@@ -234,7 +203,7 @@ func (s *Scope) Request(ctx context.Context, id int64) (*RequestDetail, error) {
 			&d.Database, &d.Source, &d.CreatedAt,
 			&migrationID, &from, &to, &generatedAt, &irreversible, &mergeBase,
 			&d.Branch, &d.BranchID,
-			&changesJSON, &renamesJSON, &d.AuthoredSQL, &d.NoRevertReason,
+			&changesJSON, &renamesJSON, &d.AuthoredSQL,
 			&d.ClosedAt, &d.ClosedBy)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNoSuchRequest
@@ -314,29 +283,6 @@ func (s *Scope) Request(ctx context.Context, id int64) (*RequestDetail, error) {
 	}
 	if d.Targets, err = s.Targets(ctx, id); err != nil {
 		return nil, err
-	}
-	if d.MigrationID != 0 {
-		if d.Revert, err = s.RevertSteps(ctx, d.MigrationID); err != nil {
-			return nil, err
-		}
-		// Only once something has run. Before that there is nothing to undo,
-		// and offering the option would suggest otherwise.
-		// Not offered once the request is settled: closing gives up the
-		// shortcut deliberately, and a button that refuses on press is worse
-		// than one that is not there.
-		if len(d.Executions) > 0 && d.State != "CLOSED" {
-			switch plan, perr := s.PlanRollback(ctx, d.MigrationID); {
-			case perr == nil:
-				d.Rollback = plan
-			case errors.Is(perr, ErrNothingToRollBack):
-				// Silent: the database is where it started, which is the good
-				// outcome of a failed run rather than a problem to explain.
-			case errors.Is(perr, ErrCannotPlace):
-				d.RollbackRefusal = perr.Error()
-			default:
-				d.RollbackRefusal = perr.Error()
-			}
-		}
 	}
 	for _, t := range d.Threads {
 		if t.Status == "open" {

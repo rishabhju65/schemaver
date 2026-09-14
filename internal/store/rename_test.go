@@ -78,7 +78,7 @@ func TestARenameQuestionIsRaisedOnAMergedBranch(t *testing.T) {
 	defer cancel()
 	pool := mergeTestPool(ctx, t)
 
-	scope, userID, requestID := renameFixture(ctx, t, pool)
+	scope, _, requestID := renameFixture(ctx, t, pool)
 	state, err := scope.ApprovalState(ctx, requestID)
 	if err != nil {
 		t.Fatalf("ApprovalState: %v", err)
@@ -94,17 +94,10 @@ func TestARenameQuestionIsRaisedOnAMergedBranch(t *testing.T) {
 	// With the way back written, the rename question is what is left, and the
 	// gate has to say so — it reports one thing at a time, in the order a
 	// person can act on them.
-	if err := scope.WriteRevert(ctx, userID, state.MigrationID,
-		"ALTER TABLE public.orders RENAME COLUMN remark TO note;"); err != nil {
-		t.Fatalf("WriteRevert: %v", err)
-	}
 	// Standing in for the worker, which is not running here.
 	st := store.New(pool, nil)
 	if err := st.RecordProof(ctx, state.MigrationID, "passed", "", nil); err != nil {
 		t.Fatalf("RecordProof: %v", err)
-	}
-	if err := st.RecordRevertProof(ctx, state.MigrationID, "passed", ""); err != nil {
-		t.Fatalf("RecordRevertProof: %v", err)
 	}
 
 	state, err = scope.ApprovalState(ctx, requestID)

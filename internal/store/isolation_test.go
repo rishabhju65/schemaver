@@ -288,13 +288,11 @@ func TestClosingFreezesARequest(t *testing.T) {
 
 	// Every way of acting on it now refuses, with the same answer.
 	for name, act := range map[string]func() error{
-		"approving":            func() error { return scope.Decide(ctx, requestID, userID, "approve", "") },
-		"editing a statement":  func() error { return scope.EditStatement(ctx, userID, migrationID, false, 1, "SELECT 1;") },
-		"writing a revert":     func() error { return scope.WriteRevert(ctx, userID, migrationID, "SELECT 1;") },
-		"declaring it one-way": func() error { return scope.DeclareIrreversible(ctx, userID, migrationID, "because") },
-		"starting a thread":    func() error { _, err := scope.StartThread(ctx, requestID, userID, "", "hello"); return err },
-		"queueing execution":   func() error { return scope.EnqueueExecution(ctx, userID, requestID) },
-		"closing it again":     func() error { return scope.CloseRequest(ctx, userID, requestID, "") },
+		"approving":           func() error { return scope.Decide(ctx, requestID, userID, "approve", "") },
+		"editing a statement": func() error { return scope.EditStatement(ctx, userID, migrationID, 1, "SELECT 1;") },
+		"starting a thread":   func() error { _, err := scope.StartThread(ctx, requestID, userID, "", "hello"); return err },
+		"queueing execution":  func() error { return scope.EnqueueExecution(ctx, userID, requestID) },
+		"closing it again":    func() error { return scope.CloseRequest(ctx, userID, requestID, "") },
 	} {
 		if err := act(); err == nil {
 			t.Errorf("%s was allowed on a closed request", name)

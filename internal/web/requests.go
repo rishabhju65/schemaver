@@ -245,21 +245,6 @@ func (s *Server) act(w http.ResponseWriter, r *http.Request) {
 		// migration regenerated between someone seeing the button and pressing
 		// it.
 		actErr = scope.EnqueueExecution(r.Context(), user.ID, id)
-	case "rollback":
-		// Planned again inside EnqueueRollback rather than trusted from the
-		// page: a database can move between somebody seeing the button and
-		// pressing it, and a rollback composed for one state must not be run
-		// against another.
-		detail, derr := scope.Request(r.Context(), id)
-		if derr != nil {
-			actErr = derr
-			break
-		}
-		if detail.MigrationID == 0 {
-			actErr = errors.New("this request has no migration to undo")
-			break
-		}
-		actErr = scope.EnqueueRollback(r.Context(), user.ID, detail.MigrationID)
 	default:
 		actErr = errors.New("unknown action")
 	}
@@ -343,41 +328,8 @@ func (s *Server) editStatement(w http.ResponseWriter, r *http.Request) {
 
 	back := "/requests/" + strconv.FormatInt(id, 10)
 	err = scope.EditStatement(r.Context(), userFrom(r.Context()).ID, migrationID,
-		r.FormValue("which") == "revert", ordinal, r.FormValue("sql"))
+		ordinal, r.FormValue("sql"))
 	if err != nil {
-		http.Redirect(w, r, back+"?error="+url.QueryEscape(err.Error()),
-			http.StatusSeeOther)
-		return
-	}
-	http.Redirect(w, r, back, http.StatusSeeOther)
-}
-
-// writeRevert stores the way back as somebody wrote it.
-func (s *Server) writeRevert(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if err != nil {
-		http.Error(w, "not a request id", http.StatusBadRequest)
-		return
-	}
-	if !checkCSRF(r) {
-		http.Error(w, "invalid form token; reload the page and try again",
-			http.StatusForbidden)
-		return
-	}
-	scope, serr := s.scoped(r)
-	if serr != nil {
-		http.Error(w, serr.Error(), http.StatusInternalServerError)
-		return
-	}
-	migrationID, err := strconv.ParseInt(r.FormValue("migration"), 10, 64)
-	if err != nil {
-		http.Error(w, "not a migration id", http.StatusBadRequest)
-		return
-	}
-
-	back := "/requests/" + strconv.FormatInt(id, 10)
-	if err := scope.WriteRevert(r.Context(), userFrom(r.Context()).ID,
-		migrationID, r.FormValue("sql")); err != nil {
 		http.Redirect(w, r, back+"?error="+url.QueryEscape(err.Error()),
 			http.StatusSeeOther)
 		return
@@ -516,40 +468,6 @@ func (s *Server) revise(w http.ResponseWriter, r *http.Request) {
 	back := "/requests/" + strconv.FormatInt(id, 10)
 	if err := scope.ReviseAuthored(r.Context(), userFrom(r.Context()).ID, id,
 		r.FormValue("sql")); err != nil {
-		http.Redirect(w, r, back+"?error="+url.QueryEscape(err.Error()),
-			http.StatusSeeOther)
-		return
-	}
-	http.Redirect(w, r, back, http.StatusSeeOther)
-}
-
-// declareIrreversible records that a change has no way back, and why.
-func (s *Server) declareIrreversible(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if err != nil {
-		http.Error(w, "not a request id", http.StatusBadRequest)
-		return
-	}
-	if !checkCSRF(r) {
-		http.Error(w, "invalid form token; reload the page and try again",
-			http.StatusForbidden)
-		return
-	}
-	scope, serr := s.scoped(r)
-	if serr != nil {
-		http.Error(w, serr.Error(), http.StatusInternalServerError)
-		return
-	}
-	back := "/requests/" + strconv.FormatInt(id, 10)
-
-	detail, derr := scope.Request(r.Context(), id)
-	if derr != nil || detail.MigrationID == 0 {
-		http.Redirect(w, r, back+"?error="+url.QueryEscape("no migration to declare"),
-			http.StatusSeeOther)
-		return
-	}
-	if err := scope.DeclareIrreversible(r.Context(), userFrom(r.Context()).ID,
-		detail.MigrationID, r.FormValue("reason")); err != nil {
 		http.Redirect(w, r, back+"?error="+url.QueryEscape(err.Error()),
 			http.StatusSeeOther)
 		return

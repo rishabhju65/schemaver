@@ -22,15 +22,6 @@ database being changed.</p>
   also its only author gains nothing from approving their own work — and the
   record of who approved what is kept either way.</span>
 
-  <label style="margin-top:16px">
-    <input type="checkbox" name="revert" {{if .Policy.RevertRequired}}checked{{end}}
-      {{if not .IsAdmin}}disabled{{end}}>
-    Somebody must write the way back, or say why there is not one
-  </label>
-  <span class="hint">Turning this off does not leave a revert unchecked. One
-  written anyway is still rehearsed against a throwaway copy, and one that does
-  not lead back still stops the change. What it gives up is being asked.</span>
-
   {{if .IsAdmin}}
   <button type="submit" style="margin-top:18px">Save</button>
   {{else}}
@@ -48,10 +39,6 @@ an opinion about process.</p>
     <span class="cls destructive">always</span>
     <div>A migration that did not produce the schema it declares when rehearsed
     against a throwaway copy.</div>
-  </div>
-  <div class="change">
-    <span class="cls destructive">always</span>
-    <div>A way back that was written and does not lead back.</div>
   </div>
   <div class="change">
     <span class="cls destructive">always</span>

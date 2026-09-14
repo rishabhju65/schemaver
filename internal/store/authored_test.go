@@ -94,7 +94,7 @@ func TestAuthoredDataStatementSurvivesGeneration(t *testing.T) {
 	}
 	backfill := detail.Steps[0].SQL +
 		"\nUPDATE public.orders SET channel = 'web' WHERE channel IS NULL;"
-	if err := scope.EditStatement(ctx, userID, migrationID, false,
+	if err := scope.EditStatement(ctx, userID, migrationID,
 		detail.Steps[0].Ordinal, backfill); err != nil {
 		t.Fatalf("authoring a data statement into a step: %v", err)
 	}

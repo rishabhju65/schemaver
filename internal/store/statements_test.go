@@ -88,16 +88,17 @@ func TestSplitStatements(t *testing.T) {
 func TestPlanDigestNoticesReordering(t *testing.T) {
 	a := []Step{{Ordinal: 1, SQL: "DROP INDEX i;"}, {Ordinal: 2, SQL: "DROP COLUMN c;"}}
 	b := []Step{{Ordinal: 1, SQL: "DROP COLUMN c;"}, {Ordinal: 2, SQL: "DROP INDEX i;"}}
-	if planDigest(a, nil) == planDigest(b, nil) {
+	if planDigest(a) == planDigest(b) {
 		t.Error("two plans with the same statements in a different order digest " +
 			"the same; dropping an index before or after the column it sits on " +
 			"is not the same plan")
 	}
 
-	// And the revert counts, because it is approved alongside.
-	withRevert := planDigest(a, []RevertStep{{Ordinal: 1, SQL: "CREATE INDEX i;"}})
-	if withRevert == planDigest(a, nil) {
-		t.Error("writing a revert did not change the digest; an approval given " +
-			"before there was a way back would still count after one appeared")
+	// Editing a statement changes it, which is what makes an approval expire
+	// when the thing it approved moves.
+	edited := []Step{{Ordinal: 1, SQL: "DROP INDEX i;"}, {Ordinal: 2, SQL: "DROP TABLE c;"}}
+	if planDigest(a) == planDigest(edited) {
+		t.Error("changing a statement did not change the digest; an approval " +
+			"given for the old plan would still count for the new one")
 	}
 }

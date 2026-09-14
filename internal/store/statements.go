@@ -1,21 +1,12 @@
 package store
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"io"
 	"strings"
 )
-
-// RevertStep is one statement of the way back, as somebody wrote it.
-type RevertStep struct {
-	Ordinal       int
-	SQL           string
-	Transactional bool
-	Note          string
-}
 
 // planDigest identifies the statements a decision was made about.
 //
@@ -28,15 +19,17 @@ type RevertStep struct {
 // Ordering is most of what a migration is — a drop before the index that
 // depends on it is a different plan from the reverse — and a digest that
 // ignored it would call two different plans the same.
-func planDigest(forward []Step, revert []RevertStep) string {
+func planDigest(steps []Step) string {
 	h := sha256.New()
-	for _, st := range forward {
+	for _, st := range steps {
 		fmt.Fprintf(h, "%d:%s\n", st.Ordinal, st.SQL)
 	}
+	// A trailing separator that once divided the forward statements from the
+	// way back. Kept now that there is no way back, because removing it would
+	// change the digest of every plan that never had one — withdrawing
+	// approvals of statements nobody has touched, which is the opposite of what
+	// the digest is for.
 	io.WriteString(h, "--\n")
-	for _, st := range revert {
-		fmt.Fprintf(h, "%d:%s\n", st.Ordinal, st.SQL)
-	}
 	return hex.EncodeToString(h.Sum(nil))
 }
 
@@ -124,28 +117,4 @@ func onlyComments(sql string) bool {
 		}
 	}
 	return true
-}
-
-// RevertSteps reads the way back for a migration.
-func (s *Scope) RevertSteps(ctx context.Context, migrationID int64) ([]RevertStep, error) {
-	rows, err := s.store.pool.Query(ctx, `
-		SELECT rs.ordinal, rs.sql, rs.transactional, COALESCE(rs.note, '')
-		  FROM schemaver.migration_revert_step rs
-		  JOIN schemaver.migration m ON m.id = rs.migration_id
-		  JOIN schemaver.change_request r ON r.id = m.change_request_id
-		 WHERE rs.migration_id = $1 AND r.project_id = ANY($2)
-		 ORDER BY rs.ordinal`, migrationID, s.projects)
-	if err != nil {
-		return nil, fmt.Errorf("load revert steps: %w", err)
-	}
-	defer rows.Close()
-	var out []RevertStep
-	for rows.Next() {
-		var st RevertStep
-		if err := rows.Scan(&st.Ordinal, &st.SQL, &st.Transactional, &st.Note); err != nil {
-			return nil, fmt.Errorf("scan revert step: %w", err)
-		}
-		out = append(out, st)
-	}
-	return out, rows.Err()
 }

@@ -69,23 +69,9 @@ type ApprovalState struct {
 	// or unproven. ProofReason says why, when it did not pass.
 	ProofState  string
 	ProofReason string
-	// RevertProofState is whether the way back was shown to lead back, by
-	// applying it to the shadow once the forward statements had been applied.
-	RevertProofState  string
-	RevertProofReason string
-
 	// PlanDigest identifies the statements this state describes. A decision
 	// recorded against a different one is not evidence about these.
 	PlanDigest string
-	// RevertWritten reports that somebody has written the way back. Nothing
-	// generates one any more (D-022), so its absence is a person's omission
-	// rather than a limit of the engine.
-	RevertWritten bool
-	// NoRevertReason is why this change cannot be undone, where somebody has
-	// said so instead of writing a revert. Exactly one of the two is required:
-	// the gate wants a decision about reversibility, not a script (D-025).
-	NoRevertReason string
-
 	// PromotionSource names the database a change passes through before this
 	// one, or is empty where nothing precedes it. PromotionReached reports that
 	// it has already arrived at this migration's target — which is what "this
@@ -152,9 +138,7 @@ func (s *Store) approvalState(ctx context.Context, requestID int64, projects []i
 		       COALESCE(NULLIF(m.rename_candidates, 'null'::jsonb), '[]'::jsonb),
 		       r.author_id, r.project_id,
 		       m.proof_state, COALESCE(m.proof_reason, ''), m.plan_digest,
-		       m.revert_proof_state, COALESCE(m.revert_proof_reason, ''),
-		       m.revert_authored_at IS NOT NULL, COALESCE(m.no_revert_reason, ''),
-		       COALESCE(pp.approvals_required, 1), COALESCE(pp.revert_required, true),
+		       COALESCE(pp.approvals_required, 1),
 		       COALESCE(peer.name, ''),
 		       COALESCE(peer.current_fingerprint, '') = m.to_fingerprint,
 		       COALESCE(peer.current_fingerprint, ''),
@@ -174,9 +158,8 @@ func (s *Store) approvalState(ctx context.Context, requestID int64, projects []i
 		 LIMIT 1`, requestID, projects).
 		Scan(&st.MigrationID, &st.FromFingerprint, &st.ToFingerprint,
 			&renamesJSON, &authorID, &projectID, &st.ProofState, &st.ProofReason,
-			&st.PlanDigest, &st.RevertProofState, &st.RevertProofReason,
-			&st.RevertWritten, &st.NoRevertReason,
-			&policy.ApprovalsRequired, &policy.RevertRequired,
+			&st.PlanDigest,
+			&policy.ApprovalsRequired,
 			&st.PromotionSource, &st.PromotionReached,
 			&st.PromotionAt, &mergeBase, &changesJSON)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -298,37 +281,12 @@ func (st *ApprovalState) evaluate() (bool, string) {
 		policy = *st.Policy
 	}
 	switch {
-	case policy.RevertRequired && !st.RevertWritten && st.NoRevertReason == "":
-		// Checked before the proof, because this is the author's to settle and
-		// the proof is the machine's. Telling somebody to wait for a check that
-		// cannot pass is worse than telling them what is missing.
-		//
-		// Either answer satisfies this. What is refused is neither: a change
-		// that runs without anybody having considered whether it can be undone
-		// is the state D-012 exists to prevent, and a revert written only
-		// because a gate demanded one prevents it no better (D-025).
-		return false, "nobody has said whether this can be undone; write the way " +
-			"back, or say why there is not one"
 	case st.ProofState == "pending":
 		return false, "this migration has not finished being proven against a " +
 			"throwaway copy of the database yet"
 	case st.ProofState == "failed":
 		return false, "this migration did not produce the schema it declares when " +
 			"applied to a throwaway copy: " + st.ProofReason
-	// Both guarded on there being a way back to check. Declaring a migration
-	// irreversible already records 'unproven' with a reason, so that path never
-	// reached these; a project that has stopped asking for a revert leaves the
-	// state at 'pending' with nothing that will ever move it, and without the
-	// guard the gate would simply refuse one step later than before.
-	case st.RevertWritten && st.RevertProofState == "pending":
-		return false, "the way back has not finished being checked yet"
-	case st.RevertWritten && st.RevertProofState == "failed":
-		// Blocking on this is the point of generating a revert at all. A
-		// migration that can be executed but not undone is exactly the position
-		// D-012 exists to prevent somebody discovering during an incident, and
-		// an administrator can now edit the revert until it does lead back.
-		return false, "undoing this migration would not return the database to " +
-			"where it started: " + st.RevertProofReason
 	case st.Blocking > 0:
 		return false, "a reviewer has requested changes or rejected this migration"
 	case st.UnansweredRenames > 0:

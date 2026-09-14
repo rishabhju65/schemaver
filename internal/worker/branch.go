@@ -37,7 +37,7 @@ func (w *Worker) branchWrite(ctx context.Context, branchID int64) error {
 
 	// An empty target, because nobody knows where these statements land — that
 	// is the whole question. Prove reports what it actually reached.
-	proof, err := w.cfg.Shadow.Prove(ctx, task.BaseDDL, task.Statements, nil, task.Head, "")
+	proof, err := w.cfg.Shadow.Prove(ctx, task.BaseDDL, task.Statements, task.Head, "")
 
 	var badBase *shadow.BaseError
 	var badStep *shadow.StepError

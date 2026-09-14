@@ -84,15 +84,8 @@ func TestEditingWithdrawsApproval(t *testing.T) {
 	}
 
 	// Stand in for the prover and the reviewer, so the gate is open.
-	if err := scope.WriteRevert(ctx, userID, migrationID,
-		"ALTER TABLE public.orders DROP COLUMN channel;"); err != nil {
-		t.Fatalf("WriteRevert: %v", err)
-	}
 	if err := st.RecordProof(ctx, migrationID, "passed", "", nil); err != nil {
 		t.Fatalf("RecordProof: %v", err)
-	}
-	if err := st.RecordRevertProof(ctx, migrationID, "passed", ""); err != nil {
-		t.Fatalf("RecordRevertProof: %v", err)
 	}
 	if err := scope.Decide(ctx, requestID, userID, "approve", "looks right"); err != nil {
 		t.Fatalf("Decide: %v", err)
@@ -114,7 +107,7 @@ func TestEditingWithdrawsApproval(t *testing.T) {
 		t.Fatal("no statements to edit")
 	}
 	edited := detail.Steps[0].SQL + " -- adjusted by hand"
-	if err := scope.EditStatement(ctx, userID, migrationID, false,
+	if err := scope.EditStatement(ctx, userID, migrationID,
 		detail.Steps[0].Ordinal, edited); err != nil {
 		t.Fatalf("EditStatement: %v", err)
 	}
@@ -159,7 +152,7 @@ func TestEditingWithdrawsApproval(t *testing.T) {
 		SELECT user_id FROM schemaver.project_member
 		 WHERE project_id = $1 AND role <> 'admin' LIMIT 1`, projectID).
 		Scan(&viewer); err == nil {
-		if err := scope.EditStatement(ctx, viewer, migrationID, false, 1, "SELECT 1;"); !errors.Is(err, store.ErrNotAdmin) {
+		if err := scope.EditStatement(ctx, viewer, migrationID, 1, "SELECT 1;"); !errors.Is(err, store.ErrNotAdmin) {
 			t.Errorf("a non-administrator edit was not refused: %v", err)
 		}
 	}

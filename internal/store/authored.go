@@ -294,7 +294,7 @@ func (s *Store) recordMigration(ctx context.Context, requestID int64, from, to s
 	}
 	if _, err := tx.Exec(ctx,
 		`UPDATE schemaver.migration SET plan_digest = $2 WHERE id = $1`,
-		migrationID, planDigest(steps, nil)); err != nil {
+		migrationID, planDigest(steps)); err != nil {
 		return 0, fmt.Errorf("record the plan digest: %w", err)
 	}
 

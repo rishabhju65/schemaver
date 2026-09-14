@@ -20,33 +20,25 @@ type Policy struct {
 	// gains nothing from approving their own work.
 	ApprovalsRequired int
 
-	// RevertRequired is whether somebody must write the way back, or say why
-	// there is not one, before a change can run.
-	//
-	// Turning it off does not leave a revert unchecked. One written anyway is
-	// still rehearsed, and one that does not lead back still blocks. What is
-	// given up is being asked.
-	RevertRequired bool
-
 	UpdatedBy string
 }
 
 // DefaultPolicy is what a project has until somebody changes it, and is exactly
 // what every project had before the policy existed.
 func DefaultPolicy() Policy {
-	return Policy{ApprovalsRequired: 1, RevertRequired: true}
+	return Policy{ApprovalsRequired: 1}
 }
 
 // Policy reads this project's settings.
 func (s *Scope) Policy(ctx context.Context) (Policy, error) {
 	p := DefaultPolicy()
 	err := s.store.pool.QueryRow(ctx, `
-		SELECT pp.approvals_required, pp.revert_required, COALESCE(u.email, '')
+		SELECT pp.approvals_required, COALESCE(u.email, '')
 		  FROM schemaver.project_policy pp
 		  LEFT JOIN schemaver.app_user u ON u.id = pp.updated_by
 		 WHERE pp.project_id = ANY($1)
 		 LIMIT 1`, s.projects).
-		Scan(&p.ApprovalsRequired, &p.RevertRequired, &p.UpdatedBy)
+		Scan(&p.ApprovalsRequired, &p.UpdatedBy)
 	if err != nil {
 		// No row is the ordinary case and means the defaults.
 		return DefaultPolicy(), nil
@@ -77,13 +69,12 @@ func (s *Scope) SetPolicy(ctx context.Context, actorID int64, p Policy) error {
 
 	if _, err := s.store.pool.Exec(ctx, `
 		INSERT INTO schemaver.project_policy
-		    (project_id, approvals_required, revert_required, updated_by)
-		VALUES ($1, $2, $3, $4)
+		    (project_id, approvals_required, updated_by)
+		VALUES ($1, $2, $3)
 		ON CONFLICT (project_id) DO UPDATE
 		   SET approvals_required = EXCLUDED.approvals_required,
-		       revert_required = EXCLUDED.revert_required,
 		       updated_by = EXCLUDED.updated_by, updated_at = now()`,
-		s.writable, p.ApprovalsRequired, p.RevertRequired, actorID); err != nil {
+		s.writable, p.ApprovalsRequired, actorID); err != nil {
 		return fmt.Errorf("record the policy: %w", err)
 	}
 
@@ -98,9 +89,5 @@ func describePolicy(p Policy) string {
 	if p.ApprovalsRequired == 0 {
 		approvals = "no approval"
 	}
-	way := "a way back must be written"
-	if !p.RevertRequired {
-		way = "a way back is not required"
-	}
-	return "changes now need " + approvals + "; " + way
+	return "changes now need " + approvals
 }

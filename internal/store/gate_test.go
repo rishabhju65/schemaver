@@ -41,8 +41,31 @@ func TestAPassingRehearsalDoesNotClaimReadinessTheGateDenies(t *testing.T) {
 		t.Fatalf("ApprovalState: %v", err)
 	}
 
-	// Approved, and deliberately nothing else: no way back written, which the
-	// gate requires and approval does not.
+	// A lower environment that has not had this change. Approval and a passing
+	// rehearsal are both satisfied; the promotion chain is not, which is the
+	// ordinary shape of a change that is ready in every sense except the one
+	// that matters.
+	var instanceID, peerID int64
+	pool.QueryRow(ctx, `SELECT instance_id FROM schemaver.database WHERE id = $1`,
+		databaseID).Scan(&instanceID)
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO schemaver.database (instance_id, name, managed, current_fingerprint)
+		VALUES ($1, 'gate_peer', true,
+		        (SELECT current_fingerprint FROM schemaver.database WHERE id = $2))
+		RETURNING id`, instanceID, databaseID).Scan(&peerID); err != nil {
+		t.Fatalf("create the lower environment: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE schemaver.database SET expected_peer_id = $2 WHERE id = $1`,
+		databaseID, peerID); err != nil {
+		t.Fatalf("set the peer: %v", err)
+	}
+	t.Cleanup(func() {
+		bg := context.Background()
+		pool.Exec(bg, `UPDATE schemaver.database SET expected_peer_id = NULL WHERE id = $1`, databaseID)
+		pool.Exec(bg, `DELETE FROM schemaver.database WHERE id = $1`, peerID)
+	})
+
 	if err := scope.Decide(ctx, requestID, userID, "approve", "ship it"); err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
@@ -62,7 +85,8 @@ func TestAPassingRehearsalDoesNotClaimReadinessTheGateDenies(t *testing.T) {
 		t.Fatalf("ApprovalState after the rehearsal: %v", err)
 	}
 	if after.Executable {
-		t.Fatal("the gate opened with no way back written; this test proves nothing")
+		t.Fatal("the gate opened without the change having been through the " +
+			"environment below; this test proves nothing")
 	}
 	if label == "READY_TO_EXECUTE" {
 		t.Errorf("the request claims to be ready while the gate says %q", after.Reason)
@@ -70,7 +94,7 @@ func TestAPassingRehearsalDoesNotClaimReadinessTheGateDenies(t *testing.T) {
 	if reason == "" {
 		t.Error("the request says nothing about what it is waiting for")
 	}
-	if !strings.Contains(reason, "undone") {
+	if !strings.Contains(reason, "gate_peer") {
 		t.Errorf("the reason should be the gate's own, got %q", reason)
 	}
 }
@@ -101,13 +125,6 @@ func TestAPassingRehearsalSaysReadyWhenTheGateAgrees(t *testing.T) {
 	}
 
 	// Everything the gate asks for.
-	if err := scope.WriteRevert(ctx, userID, state.MigrationID,
-		"ALTER TABLE public.orders DROP COLUMN channel;"); err != nil {
-		t.Fatalf("WriteRevert: %v", err)
-	}
-	if err := st.RecordRevertProof(ctx, state.MigrationID, "passed", ""); err != nil {
-		t.Fatalf("RecordRevertProof: %v", err)
-	}
 	if err := scope.Decide(ctx, requestID, userID, "approve", "ship it"); err != nil {
 		t.Fatalf("Decide: %v", err)
 	}

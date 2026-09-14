@@ -204,7 +204,7 @@ func (w *Worker) drainOnce(ctx context.Context, id string, kinds []string) bool 
 	// A migration may run far longer than an observation, and must not be cut
 	// short by the observation timeout.
 	timeout := w.cfg.Timeout
-	if job.Kind == store.KindExecute || job.Kind == store.KindRollback {
+	if job.Kind == store.KindExecute {
 		timeout = w.cfg.ExecutionTimeout
 	}
 	jobCtx, cancel := context.WithTimeout(ctx, timeout)
@@ -278,8 +278,6 @@ func (w *Worker) handle(ctx context.Context, job *store.Job) error {
 		return w.prove(ctx, job.TargetID)
 	case store.KindDerive:
 		return w.derive(ctx, job.TargetID)
-	case store.KindRollback:
-		return w.rollback(ctx, job.TargetID, job.DatabaseID)
 	case store.KindBranchWrite:
 		return w.branchWrite(ctx, job.TargetID)
 	default:

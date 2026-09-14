@@ -237,9 +237,7 @@ func (s *Scope) GenerateMigration(ctx context.Context, actorID, requestID int64)
 		return 0, fmt.Errorf("serialize rename candidates: %w", err)
 	}
 
-	// No revert is generated. Whoever writes the change writes the way back
-	// (D-022), so the digest covers the forward statements and whatever revert
-	// has been authored so far — which at generation time is none.
+	// The digest covers the statements, which is all a decision is about.
 	forwardSteps := make([]Step, 0, len(statements))
 	for i, st := range statements {
 		forwardSteps = append(forwardSteps, Step{
@@ -247,7 +245,7 @@ func (s *Scope) GenerateMigration(ctx context.Context, actorID, requestID int64)
 			Transactional: st.Transactional, Note: st.Note,
 		})
 	}
-	digest := planDigest(forwardSteps, nil)
+	digest := planDigest(forwardSteps)
 
 	tx, err := s.store.pool.Begin(ctx)
 	if err != nil {

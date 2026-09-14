@@ -26,7 +26,6 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 		} else {
 			cause = scope.SetPolicy(r.Context(), user.ID, store.Policy{
 				ApprovalsRequired: approvals,
-				RevertRequired:    r.FormValue("revert") == "on",
 			})
 		}
 		if cause == nil {

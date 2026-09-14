@@ -67,17 +67,10 @@ anything said on this page are kept.</p>
   <b>Gate</b>
   <div class="gates">
     <span class="added">✓ generated · {{len $r.Steps}} statement(s)</span>
-    {{if .RevertWritten}}<span class="added">✓ a way back is written</span>
-    {{else if .NoRevertReason}}<span class="modified">✓ declared irreversible</span>
-    {{else}}<span class="removed">✗ nobody has said whether this can be undone</span>{{end}}
     {{if eq .ProofState "passed"}}<span class="added">✓ rehearsed on a throwaway copy</span>
     {{else if eq .ProofState "pending"}}<span class="modified">○ rehearsing…</span>
     {{else if eq .ProofState "failed"}}<span class="removed">✗ failed its proof</span>
     {{else}}<span class="removed">✗ not proven</span>{{end}}
-    {{if eq .RevertProofState "passed"}}<span class="added">✓ the way back leads back</span>
-    {{else if eq .RevertProofState "pending"}}<span class="modified">○ checking the way back…</span>
-    {{else if eq .RevertProofState "failed"}}<span class="removed">✗ the way back does not lead back</span>
-    {{else}}<span class="fp">○ way back unchecked</span>{{end}}
     {{if .Blocking}}<span class="removed">✗ a reviewer objected</span>
     {{else}}<span class="fp">○ no objection</span>{{end}}
     {{if .UnansweredRenames}}<span class="removed">✗ {{.UnansweredRenames}} rename question(s) unanswered</span>
@@ -117,18 +110,7 @@ anything said on this page are kept.</p>
     targets, this opens on its own — nothing here needs re-approving.
   </p>
   {{end}}
-  {{if eq .RevertProofState "failed"}}
-  {{/* The forward half is fine — it applied and verified before the revert was
-       tried. Only the way back is wrong, and an administrator can edit it
-       below until it leads back. */}}
-  <p class="banner err" style="margin:14px 0 0">
-    <b>The way back does not lead back.</b><br>
-    {{.RevertProofReason}}<br>
-    The migration itself is proven; it is the revert that does not restore the
-    starting schema. Edit the revert statements below and it will be checked
-    again.
-  </p>
-  {{end}}
+  
   {{if .Executable}}
   <p class="banner ok" style="margin:14px 0 0">Ready to execute.</p>
   {{if $.CanWrite}}
@@ -270,19 +252,11 @@ now, while the choice is still open — not when it is needed.</p>
   </div>
 </div>
 
-{{if $r.RollbackRefusal}}
-<h2 style="margin-top:26px">Rolling back</h2>
-<p class="banner err">
-  <b>No rollback can be offered.</b> {{$r.RollbackRefusal}}
-</p>
-{{end}}
-
 {{if and $.CanWrite (not $.Settled) (ne $r.State "EXECUTING")}}
-{{/* COMPLETED says the statements ran; it does not say anybody is finished.
-     The rollback stays on offer until somebody says the hour after a change
-     landed is over, which is what this is for — and it is equally the ending
-     for a request abandoned in review, or one left in NEEDS_ATTENTION after
-     the database was sorted out by hand. */}}
+{{/* An ending, for a request that has run and for one that never will: a
+     change abandoned in review, or one left in NEEDS_ATTENTION after somebody
+     sorted the database out by hand. Undoing a change that ran is not this —
+     it is proposing the reverse, reviewed like anything else. */}}
 <div class="card pad" style="margin-top:22px">
   {{if $r.Ran}}
   <form method="post" action="/requests/{{$r.ID}}/done" class="inline-form">
@@ -298,8 +272,7 @@ now, while the choice is still open — not when it is needed.</p>
   </form>
   {{end}}
   <span class="hint">Nothing further can be changed afterwards: no edits, no
-  decisions, no comments{{if $r.Rollback}}, and the rollback above stops being
-  offered — undoing it then means proposing the reverse as its own change{{end}}.
+  decisions, no comments.
   Anything still queued is cancelled.</span>
 </div>
 {{end}}
@@ -332,117 +305,6 @@ the one before it, and is rehearsed against its own schema first.</p>
 </p>
 {{end}}
 
-{{with $r.Rollback}}
-<h2 style="margin-top:26px">Rolling back</h2>
-<p class="sub">The migration reached its target, so the written revert applies
-exactly as it was reviewed. schemaver runs it only if you ask.</p>
-
-<div class="card pad">
-  <div class="gates">
-    <span class="fp">{{short .From}} → {{short .To}}</span>
-    <span class="fp">{{len .Steps}} statement(s)</span>
-  </div>
-
-  <div style="margin-top:14px">
-    {{range .Steps}}
-    <div class="change">
-      <span class="cls {{if .Transactional}}metadata_only{{else}}lock_heavy{{end}}">{{.Ordinal}}</span>
-      <div><code>{{.SQL}}</code></div>
-    </div>
-    {{end}}
-  </div>
-
-  {{if $.CanWrite}}
-  <form method="post" action="/requests/{{$r.ID}}/act" style="margin-top:16px">
-    <input type="hidden" name="csrf" value="{{$.CSRF}}">
-    <input type="hidden" name="do" value="rollback">
-    <button type="submit" style="width:auto">Roll back {{$r.Database}}</button>
-    <span class="hint">Queued and applied under an exclusive lock, like the
-    migration itself. The starting schema is checked again at that moment: if
-    the database has moved since this page was drawn, the rollback is refused
-    rather than applied to a state the revert was not written for.</span>
-  </form>
-  {{end}}
-</div>
-{{end}}
-
-{{/* Written, not derived (D-022). A diff of two schemas cannot know that a
-     column was filled, so a generated revert was silently unable to undo a
-     backfill and said nothing about it. Whoever writes the change writes the
-     way back. */}}
-<h2 style="margin-top:26px">The way back</h2>
-{{if $r.NoRevertReason}}
-{{/* A stated reason, not a missing script. A reviewer approving this is
-     agreeing there is no way back, which is the choice D-012 wanted somebody to
-     make while they still could. */}}
-<p class="banner err">
-  <b>This change cannot be undone.</b><br>
-  {{$r.NoRevertReason}}<br>
-  <span class="fp">Approving it means accepting that. If the change turns out to
-  be wrong, the only recovery is a backup, which is outside this product.</span>
-</p>
-{{end}}
-{{if $r.HasRevert}}
-<p class="sub">Written by hand and reviewed alongside the migration. schemaver
-proves it returns the schema to where it started, and runs it only if you ask.</p>
-{{else if not $r.NoRevertReason}}
-<p class="banner warn">
-  <b>Nobody has said whether this can be undone.</b>
-  Write the statements that undo it — including anything the data needs, which
-  no diff of two schemas could work out — or say below why there is no way back.
-  One of the two, because a change that runs without anybody having considered
-  this is what the gate exists to prevent.
-</p>
-{{end}}
-
-<div class="card pad">
-  {{if $r.HasRevert}}
-  <div style="margin-bottom:12px">
-    {{range $r.Revert}}
-    <div class="change">
-      <span class="cls {{if .Transactional}}metadata_only{{else}}lock_heavy{{end}}">
-        {{if .Transactional}}{{.Ordinal}}{{else}}!{{end}}</span>
-      <div><code>{{.SQL}}</code>
-        {{if .Note}}<br><span class="fp">{{.Note}}</span>{{end}}</div>
-    </div>
-    {{end}}
-  </div>
-  {{end}}
-
-  {{if and $.CanWrite $.Open}}
-  <form method="post" action="/requests/{{$r.ID}}/revert">
-    <input type="hidden" name="csrf" value="{{$.CSRF}}">
-    <input type="hidden" name="migration" value="{{$r.MigrationID}}">
-    <textarea name="sql" rows="7" spellcheck="false" class="script"
-      placeholder="ALTER TABLE public.orders DROP COLUMN channel;">{{$r.RevertSQL}}</textarea>
-    <p style="margin-top:10px">
-      <button type="submit" style="width:auto">Save the way back</button>
-      <span class="hint">One script; statements are split on semicolons, and
-      semicolons inside strings, comments and function bodies are left alone.
-      Saving withdraws every approval and sends the migration back to be
-      rehearsed.</span>
-    </p>
-  </form>
-
-  {{if and (not $r.HasRevert) $.Open}}
-  <form method="post" action="/requests/{{$r.ID}}/irreversible" style="margin-top:18px">
-    <input type="hidden" name="csrf" value="{{$.CSRF}}">
-    <label style="color:var(--dim);font-size:13px">Or: this cannot be undone, because
-      <input name="reason" placeholder="drops the column and its contents; no DDL restores them">
-    </label>
-    <p style="margin-top:8px">
-      <button type="submit" class="secondary" style="width:auto">Declare it irreversible</button>
-      <span class="hint">An honest answer, and a better one than a revert
-      written to satisfy a gate. It is shown to every reviewer, and recorded
-      against the approval.</span>
-    </p>
-  </form>
-  {{end}}
-  {{end}}
-</div>
-
-{{end}}
-
 {{with $r.Timeline}}
 <h2 style="margin-top:26px">Timeline</h2>
 <p class="sub">What has happened to this request, in order. What happened inside
@@ -461,7 +323,7 @@ a run is kept with that run, below.</p>
 {{end}}
 
 {{with $r.Execution}}
-<h2 style="margin-top:26px">{{if eq .Direction "revert"}}Rollback{{else}}Execution{{end}}</h2>
+<h2 style="margin-top:26px">Execution</h2>
 {{if eq .Direction "revert"}}<p class="sub">Undoing the migration. These are the
 statements written as the way back, not the ones that applied the change.</p>{{end}}
 <div class="card pad">
@@ -664,4 +526,5 @@ administrator must review it.</p>
 {{end}}
 </table></div>
 {{end}}{{end}}
+{{end}}
 {{end}}

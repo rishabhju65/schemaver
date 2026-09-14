@@ -60,7 +60,7 @@ func TestTheDefaultPolicyIsWhatEveryProjectAlreadyHad(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Policy: %v", err)
 	}
-	if p.ApprovalsRequired != 1 || !p.RevertRequired {
+	if p.ApprovalsRequired != 1 {
 		t.Errorf("defaults changed: %+v", p)
 	}
 
@@ -69,36 +69,10 @@ func TestTheDefaultPolicyIsWhatEveryProjectAlreadyHad(t *testing.T) {
 		t.Fatalf("ApprovalState: %v", err)
 	}
 	if state.Executable {
-		t.Error("executable with no way back and no approval")
+		t.Error("executable with nobody having approved it")
 	}
-	if !strings.Contains(state.Reason, "undone") {
-		t.Errorf("expected the way-back gate, got %q", state.Reason)
-	}
-}
-
-// TestAProjectCanStopAskingForAWayBack.
-func TestAProjectCanStopAskingForAWayBack(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
-	pool := mergeTestPool(ctx, t)
-
-	scope, userID, requestID := gated(ctx, t, pool)
-	if err := scope.SetPolicy(ctx, userID, store.Policy{
-		ApprovalsRequired: 1, RevertRequired: false,
-	}); err != nil {
-		t.Fatalf("SetPolicy: %v", err)
-	}
-
-	state, err := scope.ApprovalState(ctx, requestID)
-	if err != nil {
-		t.Fatalf("ApprovalState: %v", err)
-	}
-	if strings.Contains(state.Reason, "undone") {
-		t.Error("still asking for a way back after the project said not to")
-	}
-	// The next gate is the approval, which this project still asks for.
 	if !strings.Contains(state.Reason, "approved") {
-		t.Errorf("expected the approval gate next, got %q", state.Reason)
+		t.Errorf("expected the approval gate, got %q", state.Reason)
 	}
 }
 
@@ -111,7 +85,7 @@ func TestAProjectCanStopAskingForApproval(t *testing.T) {
 
 	scope, userID, requestID := gated(ctx, t, pool)
 	if err := scope.SetPolicy(ctx, userID, store.Policy{
-		ApprovalsRequired: 0, RevertRequired: false,
+		ApprovalsRequired: 0,
 	}); err != nil {
 		t.Fatalf("SetPolicy: %v", err)
 	}
@@ -137,7 +111,7 @@ func TestLooseningPolicyDoesNotLoosenCorrectness(t *testing.T) {
 
 	scope, userID, requestID := gated(ctx, t, pool)
 	if err := scope.SetPolicy(ctx, userID, store.Policy{
-		ApprovalsRequired: 0, RevertRequired: false,
+		ApprovalsRequired: 0,
 	}); err != nil {
 		t.Fatalf("SetPolicy: %v", err)
 	}

@@ -38,7 +38,7 @@ func (w *Worker) derive(ctx context.Context, requestID int64) error {
 	}
 
 	from := schema.Version(task.From)
-	proof, err := w.cfg.Shadow.Prove(ctx, task.BaseDDL, task.Statements, nil, from, "")
+	proof, err := w.cfg.Shadow.Prove(ctx, task.BaseDDL, task.Statements, from, "")
 
 	var badBase *shadow.BaseError
 	var badStep *shadow.StepError
