@@ -565,3 +565,13 @@ func TestAMergedBranchCanStillReachProduction(t *testing.T) {
 			after.Reason)
 	}
 }
+
+// tbl and withTables build multi-table fixtures, for tests about which objects
+// differ rather than which columns do.
+func tbl(name string, cols ...schema.Column) schema.Table {
+	return schema.Table{Name: name, Columns: cols}
+}
+
+func withTables(tables ...schema.Table) *schema.Schema {
+	return &schema.Schema{Namespaces: []schema.Namespace{{Name: "public", Tables: tables}}}
+}

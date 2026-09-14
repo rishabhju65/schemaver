@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/rishabhju65/schemaver/internal/history"
 	"github.com/rishabhju65/schemaver/internal/schema"
 )
 
@@ -228,6 +229,23 @@ type DriftRow struct {
 	Status      string
 	FirstSeen   time.Time
 	LastSeen    time.Time
+
+	// Changed is which objects differ, and Summary counts them. Two
+	// fingerprints say that a database is not where it should be and nothing
+	// about what is wrong, which leaves the only way to find out being to open
+	// a change request — backwards, since what changed is how somebody decides
+	// whether to open one.
+	//
+	// Worked out from the two stored schemas rather than recorded when the
+	// divergence opened: a drift row is one row with a moving last_seen, and
+	// what differs today is not what differed when it was first noticed.
+	Changed []history.ObjectChange
+	Summary history.Summary
+
+	// Unexplained is set where the difference could not be worked out — one of
+	// the two schemas is not readable. Said plainly rather than shown as "no
+	// changes", which would be the same display as agreement.
+	Unexplained string
 }
 
 // Drifts lists divergences, open ones first.
@@ -260,6 +278,7 @@ func (s *Scope) Drifts(ctx context.Context, includeResolved bool) ([]DriftRow, e
 			return nil, fmt.Errorf("scan drift row: %w", err)
 		}
 		r.Observed, r.Expected = schema.Version(observed), schema.Version(expected)
+		s.explain(ctx, &r)
 		out = append(out, r)
 	}
 	return out, rows.Err()
@@ -306,4 +325,37 @@ func (s *Scope) Database(ctx context.Context, id int64) (*DatabaseSummary, error
 	}
 	d.Observed = schema.Version(fingerprint)
 	return &d, nil
+}
+
+// explain works out what actually differs about a divergence.
+//
+// Failures are recorded on the row rather than returned. A drift page that will
+// not load because one schema of one database could not be read is worse than
+// one that shows every divergence and admits it cannot describe one of them —
+// and the fingerprints, which are the part that matters for deciding something
+// is wrong, are already in hand either way.
+func (s *Scope) explain(ctx context.Context, r *DriftRow) {
+	if r.Observed == "" || r.Expected == "" {
+		r.Unexplained = "one side has not been read"
+		return
+	}
+	expected, err := s.Blob(ctx, r.Expected)
+	if err != nil || expected == nil {
+		r.Unexplained = "the schema it should match is no longer readable"
+		return
+	}
+	observed, err := s.Blob(ctx, r.Observed)
+	if err != nil || observed == nil {
+		r.Unexplained = "the schema it is at is no longer readable"
+		return
+	}
+	r.Changed = history.ObjectsChanged(expected, observed)
+	r.Summary = history.Count(r.Changed)
+	if len(r.Changed) == 0 {
+		// Different fingerprints with no object differing means the difference
+		// is inside an object rather than in which objects exist — a column, a
+		// constraint, an index. Saying "nothing changed" would contradict the
+		// fingerprints on the same row.
+		r.Unexplained = "the difference is inside an object rather than in which objects exist"
+	}
 }

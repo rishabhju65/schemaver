@@ -6,14 +6,30 @@ which generates the migration from the difference.</p>
 <div class="card scroll">
 <table>
 <tr><th>Database</th><th>Environment</th><th>Compared against</th>
-<th>Observed</th><th>Expected</th><th>Since</th><th>Status</th><th></th></tr>
+<th>What differs</th><th>Since</th><th>Status</th><th></th></tr>
 {{range .Rows}}
 <tr>
   <td>{{.Database}}<br><span class="fp">{{.Instance}}</span></td>
   <td>{{if .Environment}}<span class="tag">{{.Environment}}</span>{{else}}<span class="fp">—</span>{{end}}</td>
   <td>{{if eq .Source "peer"}}{{.Peer}}{{else}}declared schema{{end}}</td>
-  <td class="fp removed">{{short .Observed}}</td>
-  <td class="fp">{{short .Expected}}</td>
+  {{/* What differs, not two hashes. A fingerprint pair says a database is not
+       where it should be and nothing about what is wrong, which left the only
+       way to find out being to open a change request — backwards, since what
+       changed is how somebody decides whether to open one. The hashes stay
+       underneath, because they are what the comparison actually was. */}}
+  <td>
+    {{if .Unexplained}}<span class="fp">{{.Unexplained}}</span>
+    {{else}}<b>{{.Summary.Describe}}</b>
+      <div style="margin-top:4px">
+      {{range .Changed}}
+        <span class="cls {{if eq .Kind "added"}}additive{{else if eq .Kind "removed"}}destructive{{else}}metadata_only{{end}}"
+          style="display:inline-block;min-width:70px">{{.Kind}}</span>
+        <code class="fp">{{.Name}}</code><br>
+      {{end}}
+      </div>
+    {{end}}
+    <span class="fp">{{short .Expected}} → {{short .Observed}}</span>
+  </td>
   <td class="fp">{{stamp .FirstSeen}}</td>
   <td>{{if eq .Status "open"}}<span class="removed">open</span>
       {{else}}<span class="fp">{{.Status}}</span>{{end}}</td>
