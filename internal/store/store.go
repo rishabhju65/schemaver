@@ -113,6 +113,12 @@ type Target struct {
 	// performed regardless — the backstop that keeps a probe blind spot from
 	// hiding a change indefinitely.
 	FullReadDue bool
+
+	// Excluded names schemas inside this database that are not watched. Applied
+	// after reading rather than pushed into the queries: the engine is the
+	// authority on what is there, and which of it matters is a separate
+	// question answered in one place.
+	Excluded []string
 }
 
 // LoadTarget assembles everything needed to observe one database.
@@ -127,13 +133,13 @@ func (s *Store) LoadTarget(ctx context.Context, databaseID int64, fullReadAfter 
 	err := s.pool.QueryRow(ctx, `
 		SELECT d.name, i.id, i.host, i.port, i.tls_mode, c.username, c.kind,
 		       COALESCE(c.secret_ref, ''), COALESCE(c.secret_ciphertext, '\x'::bytea),
-		       d.probe_digest, d.last_read_at
+		       d.probe_digest, d.last_read_at, d.excluded_namespaces
 		FROM schemaver.database d
 		JOIN schemaver.instance i ON i.id = d.instance_id
 		JOIN schemaver.credential c ON c.id = i.credential_id
 		WHERE d.id = $1 AND d.archived_at IS NULL AND i.archived_at IS NULL`, databaseID).
 		Scan(&t.Name, &t.InstanceID, &e.host, &e.port, &e.tlsMode, &e.username,
-			&kind, &ref, &ciphertext, &probe, &lastRead)
+			&kind, &ref, &ciphertext, &probe, &lastRead, &t.Excluded)
 	if err != nil {
 		return nil, fmt.Errorf("load database %d: %w", databaseID, err)
 	}

@@ -183,3 +183,31 @@ type Enum struct {
 	Labels  []string `json:"labels"`
 	Comment string   `json:"comment,omitempty"`
 }
+
+// Without returns a copy of s with the named namespaces removed.
+//
+// Applied after a database is read rather than pushed into the queries that
+// read it. The engine is the authority on what is there; which of it this
+// project cares about is a separate question, and answering it in one place
+// means every reader of a schema gets the same answer.
+//
+// A foreign key pointing into an excluded namespace keeps its reference. The
+// constraint genuinely does point there, and rewriting it to say otherwise
+// would be inventing a schema nobody has.
+func (s *Schema) Without(namespaces []string) *Schema {
+	if len(namespaces) == 0 || s == nil {
+		return s
+	}
+	drop := make(map[string]bool, len(namespaces))
+	for _, n := range namespaces {
+		drop[n] = true
+	}
+	out := &Schema{}
+	for _, ns := range s.Namespaces {
+		if drop[ns.Name] {
+			continue
+		}
+		out.Namespaces = append(out.Namespaces, ns)
+	}
+	return out
+}

@@ -476,6 +476,10 @@ func (w *Worker) read(ctx context.Context, t *store.Target) error {
 	if err != nil {
 		return err
 	}
+	// What this database is not watching, dropped before anything is made of
+	// it. A fingerprint is of the schemas somebody asked about; leaving an
+	// excluded one in would make a change nobody cares about look like drift.
+	sch = sch.Without(t.Excluded)
 	fingerprint, err := schema.Fingerprint(sch)
 	if err != nil {
 		return err

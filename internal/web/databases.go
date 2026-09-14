@@ -100,8 +100,12 @@ func (s *Server) databaseNew(w http.ResponseWriter, r *http.Request) {
 		render(err)
 		return
 	}
-	_ = id
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	// Onboarding ends by asking what to watch, while somebody is still looking
+	// at the database they just added — rather than leaving it as a setting to
+	// discover after a schema they do not care about has been reporting drift
+	// for a week.
+	http.Redirect(w, r, "/database/"+strconv.FormatInt(id, 10)+"/watch?new=1",
+		http.StatusSeeOther)
 }
 
 // adopt is the picker: what else is on this server, and which of it do you
