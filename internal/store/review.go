@@ -202,10 +202,16 @@ func (s *Store) approvalState(ctx context.Context, requestID int64, projects []i
 	//
 	// The question underneath it still has an answer: has the work this
 	// migration carries already run down there. Asked as "is there anything
-	// this migration touches that staging still needs", which reduces to the
-	// fingerprint test whenever the target is the source's own schema, and
-	// keeps the property that matters — it is recomputed from where staging is
-	// now, so it shuts again by itself if staging moves off (D-010).
+	// this migration touches that staging still needs", and asked only where
+	// the fingerprint test cannot apply — the guard below is what keeps an
+	// ordinary request on the old rule exactly as before, rather than on a new
+	// one that happens to agree with it.
+	//
+	// For a merge it is looser than fingerprint equality on purpose: staging
+	// drifting in some way this change never touched does not unmake the fact
+	// that this change ran there. What is kept is the property that mattered —
+	// it is recomputed from where staging is now, so staging losing the work
+	// shuts it again by itself (D-010).
 	if mergeBase != "" && !st.PromotionReached && st.PromotionAt != "" {
 		reached, err := s.peerHasTheWork(ctx, st.PromotionAt, st.ToFingerprint, changesJSON)
 		if err != nil {
