@@ -493,9 +493,13 @@ func sameConstraint(a, b schema.Constraint) bool {
 }
 
 func sameIndex(a, b schema.Index) bool {
+	// Validity counts. An index left behind by a failed concurrent build
+	// describes the same columns as the one that was wanted and is not the same
+	// object: one is used and the other never will be. Comparing them as equal
+	// is what let a failed build read back as success.
 	return a.Unique == b.Unique && a.Method == b.Method &&
 		equalStrings(a.Columns, b.Columns) && equalStrings(a.Include, b.Include) &&
-		a.Predicate == b.Predicate
+		a.Predicate == b.Predicate && a.Invalid == b.Invalid
 }
 
 func equalStrings(a, b []string) bool {

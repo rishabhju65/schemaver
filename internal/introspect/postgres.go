@@ -362,6 +362,7 @@ func readIndexes(ctx context.Context, q Querier, tables map[tableKey]*schema.Tab
 	// expression indexes that have no column name to report.
 	rows, err := q.Query(ctx, `
 		SELECT n.nspname, c.relname, ic.relname, i.indisunique, am.amname,
+		       NOT i.indisvalid,
 		       COALESCE((SELECT array_agg(pg_get_indexdef(i.indexrelid, k, true) ORDER BY k)
 		                 FROM generate_series(1, i.indnkeyatts) k), '{}'),
 		       COALESCE((SELECT array_agg(pg_get_indexdef(i.indexrelid, k, true) ORDER BY k)
@@ -391,8 +392,8 @@ func readIndexes(ctx context.Context, q Querier, tables map[tableKey]*schema.Tab
 		var k tableKey
 		var idx schema.Index
 		if err := rows.Scan(&k.ns, &k.table, &idx.Name, &idx.Unique, &idx.Method,
-			&idx.Columns, &idx.Include, &idx.Predicate, &idx.Definition,
-			&idx.Comment); err != nil {
+			&idx.Invalid, &idx.Columns, &idx.Include, &idx.Predicate,
+			&idx.Definition, &idx.Comment); err != nil {
 			return fmt.Errorf("scan index: %w", err)
 		}
 		if t, ok := tables[k]; ok {

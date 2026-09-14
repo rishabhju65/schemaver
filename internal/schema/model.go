@@ -133,6 +133,21 @@ type Index struct {
 	// Predicate is the WHERE clause of a partial index, empty otherwise.
 	Predicate string `json:"predicate,omitempty"`
 
+	// Invalid marks an index the engine will not use.
+	//
+	// A `CREATE INDEX CONCURRENTLY` that fails leaves the index behind marked
+	// invalid: it is in the catalogue, it has a name, `pg_get_indexdef` renders
+	// it identically to a working one, and no query will ever touch it. Without
+	// this field such an index was indistinguishable from the real thing, so a
+	// build that failed after three hours on a large table read back as the
+	// schema it was trying to reach — the migration looked done, drift saw
+	// nothing, and the planner quietly ignored the index forever.
+	//
+	// omitempty is load-bearing rather than tidiness: a valid index serializes
+	// exactly as it did before this field existed, so no stored fingerprint
+	// moves and nothing has to be re-baselined.
+	Invalid bool `json:"invalid,omitempty"`
+
 	Definition string `json:"definition,omitempty"`
 }
 
