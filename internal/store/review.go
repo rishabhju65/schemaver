@@ -91,6 +91,13 @@ type ApprovalState struct {
 	// it has already arrived at this migration's target — which is what "this
 	// has been through staging" means, since a migration names the schema it is
 	// trying to reach.
+	// Policy is what the project asks for, as distinct from what is true of
+	// this migration. A pointer, and nil means the defaults — so a state built
+	// without one is gated as strictly as the product was before any of this
+	// existed. The alternative zero value would have been "ask for nothing",
+	// which is the wrong way for a forgotten field to fail.
+	Policy *Policy
+
 	PromotionSource  string
 	PromotionReached bool
 	// PromotionAt is where the lower environment actually sits, so a refusal can
@@ -133,6 +140,7 @@ func (s *Store) approvalState(ctx context.Context, requestID int64, projects []i
 		projectID   int64
 		renamesJSON []byte
 		mergeBase   string
+		policy      = DefaultPolicy()
 		changesJSON []byte
 	)
 
@@ -146,6 +154,7 @@ func (s *Store) approvalState(ctx context.Context, requestID int64, projects []i
 		       m.proof_state, COALESCE(m.proof_reason, ''), m.plan_digest,
 		       m.revert_proof_state, COALESCE(m.revert_proof_reason, ''),
 		       m.revert_authored_at IS NOT NULL, COALESCE(m.no_revert_reason, ''),
+		       COALESCE(pp.approvals_required, 1), COALESCE(pp.revert_required, true),
 		       COALESCE(peer.name, ''),
 		       COALESCE(peer.current_fingerprint, '') = m.to_fingerprint,
 		       COALESCE(peer.current_fingerprint, ''),
@@ -156,6 +165,9 @@ func (s *Store) approvalState(ctx context.Context, requestID int64, projects []i
 		  -- The database this one follows. Absent where nothing precedes it, in
 		  -- which case there is no lower environment to have rehearsed anything.
 		  LEFT JOIN schemaver.database peer ON peer.id = d.expected_peer_id
+		  -- Absent means the defaults, which are what every project had before
+		  -- the policy table existed.
+		  LEFT JOIN schemaver.project_policy pp ON pp.project_id = r.project_id
 		 WHERE r.id = $1 AND ($2::bigint[] IS NULL OR r.project_id = ANY($2))
 		   AND m.superseded_at IS NULL
 		 ORDER BY m.generated_at DESC
@@ -163,7 +175,9 @@ func (s *Store) approvalState(ctx context.Context, requestID int64, projects []i
 		Scan(&st.MigrationID, &st.FromFingerprint, &st.ToFingerprint,
 			&renamesJSON, &authorID, &projectID, &st.ProofState, &st.ProofReason,
 			&st.PlanDigest, &st.RevertProofState, &st.RevertProofReason,
-			&st.RevertWritten, &st.NoRevertReason, &st.PromotionSource, &st.PromotionReached,
+			&st.RevertWritten, &st.NoRevertReason,
+			&policy.ApprovalsRequired, &policy.RevertRequired,
+			&st.PromotionSource, &st.PromotionReached,
 			&st.PromotionAt, &mergeBase, &changesJSON)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNoMigration
@@ -171,6 +185,7 @@ func (s *Store) approvalState(ctx context.Context, requestID int64, projects []i
 	if err != nil {
 		return nil, fmt.Errorf("load migration for request %d: %w", requestID, err)
 	}
+	st.Policy = &policy
 	// A candidate with an answer against it is no longer a question. Both
 	// answers settle it: "renamed" changed the statements when it was given,
 	// and "not renamed" confirmed that the drop already in the plan is what was
@@ -278,8 +293,12 @@ func (s *Store) approvalState(ctx context.Context, requestID int64, projects []i
 
 // evaluate applies the gate, in the order a reader would ask the questions.
 func (st *ApprovalState) evaluate() (bool, string) {
+	policy := DefaultPolicy()
+	if st.Policy != nil {
+		policy = *st.Policy
+	}
 	switch {
-	case !st.RevertWritten && st.NoRevertReason == "":
+	case policy.RevertRequired && !st.RevertWritten && st.NoRevertReason == "":
 		// Checked before the proof, because this is the author's to settle and
 		// the proof is the machine's. Telling somebody to wait for a check that
 		// cannot pass is worse than telling them what is missing.
@@ -296,9 +315,14 @@ func (st *ApprovalState) evaluate() (bool, string) {
 	case st.ProofState == "failed":
 		return false, "this migration did not produce the schema it declares when " +
 			"applied to a throwaway copy: " + st.ProofReason
-	case st.RevertProofState == "pending":
+	// Both guarded on there being a way back to check. Declaring a migration
+	// irreversible already records 'unproven' with a reason, so that path never
+	// reached these; a project that has stopped asking for a revert leaves the
+	// state at 'pending' with nothing that will ever move it, and without the
+	// guard the gate would simply refuse one step later than before.
+	case st.RevertWritten && st.RevertProofState == "pending":
 		return false, "the way back has not finished being checked yet"
-	case st.RevertProofState == "failed":
+	case st.RevertWritten && st.RevertProofState == "failed":
 		// Blocking on this is the point of generating a revert at all. A
 		// migration that can be executed but not undone is exactly the position
 		// D-012 exists to prevent somebody discovering during an incident, and
@@ -312,8 +336,13 @@ func (st *ApprovalState) evaluate() (bool, string) {
 			"%d rename question(s) are unanswered; a rename and a drop-and-add are "+
 				"indistinguishable from the schema alone, and guessing destroys data",
 			st.UnansweredRenames)
-	case st.AdminApprovals == 0:
-		return false, "no project administrator has approved this migration"
+	case st.AdminApprovals < policy.ApprovalsRequired:
+		if policy.ApprovalsRequired == 1 {
+			return false, "no project administrator has approved this migration"
+		}
+		return false, fmt.Sprintf(
+			"this project asks for %d administrator approvals and has %d",
+			policy.ApprovalsRequired, st.AdminApprovals)
 	case st.PromotionSource != "" && !st.PromotionReached:
 		// Checked last, so that everything a person can act on directly is
 		// reported first. This one is usually not a mistake to correct but a

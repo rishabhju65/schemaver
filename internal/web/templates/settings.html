@@ -1,0 +1,74 @@
+{{define "content"}}
+<h1>Settings</h1>
+<p class="sub">What this project asks for between a change being written and a
+database being changed.</p>
+
+{{if .Error}}<p class="banner err">{{.Error}}</p>{{end}}
+
+<div class="card pad" style="max-width:640px">
+<form method="post" action="/settings">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+
+  <label>Approvals needed before a change can run
+    <select name="approvals" {{if not .IsAdmin}}disabled{{end}}>
+      {{range .Choices}}
+      <option value="{{.}}" {{if eq . $.Policy.ApprovalsRequired}}selected{{end}}>
+        {{if eq . 0}}none{{else}}{{.}}{{end}}
+      </option>
+      {{end}}
+    </select>
+  </label>
+  <span class="hint">None is a real answer. A project whose only administrator is
+  also its only author gains nothing from approving their own work — and the
+  record of who approved what is kept either way.</span>
+
+  <label style="margin-top:16px">
+    <input type="checkbox" name="revert" {{if .Policy.RevertRequired}}checked{{end}}
+      {{if not .IsAdmin}}disabled{{end}}>
+    Somebody must write the way back, or say why there is not one
+  </label>
+  <span class="hint">Turning this off does not leave a revert unchecked. One
+  written anyway is still rehearsed against a throwaway copy, and one that does
+  not lead back still stops the change. What it gives up is being asked.</span>
+
+  {{if .IsAdmin}}
+  <button type="submit" style="margin-top:18px">Save</button>
+  {{else}}
+  <p class="hint" style="margin-top:18px">Only a project administrator can change
+  these.</p>
+  {{end}}
+</form>
+</div>
+
+<h2 style="margin-top:26px">What is never a setting</h2>
+<p class="sub">These hold whatever the project asks for, because none of them is
+an opinion about process.</p>
+<div class="card">
+  <div class="change">
+    <span class="cls destructive">always</span>
+    <div>A migration that did not produce the schema it declares when rehearsed
+    against a throwaway copy.</div>
+  </div>
+  <div class="change">
+    <span class="cls destructive">always</span>
+    <div>A way back that was written and does not lead back.</div>
+  </div>
+  <div class="change">
+    <span class="cls destructive">always</span>
+    <div>A reviewer who has requested changes or rejected it.</div>
+  </div>
+  <div class="change">
+    <span class="cls destructive">always</span>
+    <div>An unanswered rename question — a column's data waits on the answer,
+    and guessing discards it.</div>
+  </div>
+  <div class="change">
+    <span class="cls metadata_only">if configured</span>
+    <div>Reaching production through the environment below it, where a database
+    has one set.</div>
+  </div>
+</div>
+{{if .Policy.UpdatedBy}}
+<p class="sub" style="margin-top:14px">Last changed by {{.Policy.UpdatedBy}}.</p>
+{{end}}
+{{end}}

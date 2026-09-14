@@ -156,7 +156,7 @@ func New(s *store.Store, setup *auth.Setup, openSignup bool, targets netguard.Po
 		setup: setup, openSignup: openSignup, targets: targets}
 	for _, page := range []string{"fleet", "history", "change", "drift", "login", "signup",
 		"instances", "instance_new", "instance", "requests", "request_new", "request",
-		"activity", "retire", "request_write", "branches", "branch"} {
+		"activity", "retire", "request_write", "branches", "branch", "settings"} {
 		t, err := template.New("layout").Funcs(funcs).ParseFS(files,
 			"templates/layout.html", "templates/"+page+".html")
 		if err != nil {
@@ -205,6 +205,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /requests/{id}/close", s.requireWriter(s.closeRequest))
 	mux.HandleFunc("POST /requests/{id}/done", s.requireWriter(s.markDone))
 	mux.HandleFunc("POST /project", s.requireUser(s.switchProject))
+	mux.HandleFunc("GET /settings", s.requireUser(s.settings))
+	mux.HandleFunc("POST /settings", s.requireWriter(s.settings))
 	mux.HandleFunc("GET /instances/{id}", s.requireUser(s.instanceDetail))
 
 	// Registering a server stores a credential, so these need an account that

@@ -120,6 +120,7 @@ background:var(--bg);color:var(--fg);border:1px solid var(--line)}
   <a href="/requests" {{if eq .Nav "requests"}}class="on"{{end}}>Changes</a>
   <a href="/instances" {{if eq .Nav "instances"}}class="on"{{end}}>Servers</a>
   <a href="/activity" {{if eq .Nav "activity"}}class="on"{{end}}>Activity</a>
+  <a href="/settings" {{if eq .Nav "settings"}}class="on"{{end}}>Settings</a>
   {{if .Projects}}
   <form method="post" action="/project" style="display:inline">
     <input type="hidden" name="csrf" value="{{.CSRF}}">
