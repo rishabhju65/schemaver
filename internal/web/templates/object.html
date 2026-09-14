@@ -1,0 +1,37 @@
+{{define "content"}}
+<h1>{{.Name}}</h1>
+<p class="sub">on {{.DB.Name}}{{if .DB.Environment}} · <span class="tag">{{.DB.Environment}}</span>{{end}}
+ · <a href="/database/{{.DB.ID}}">the rest of this database</a></p>
+
+{{/* Derived from the snapshots rather than stored. A snapshot holds a whole
+     schema, so the history of any one object inside it was already recorded —
+     what was missing was a way to ask. This also answers two things a
+     version-controlled schema file cannot: which change carried each edit, and
+     that nothing did. */}}
+<div class="card">
+{{range .Events}}
+<div style="padding:12px 14px;border-bottom:1px solid var(--line)">
+  <p class="sub" style="margin:0 0 6px">
+    <span class="cls {{if eq .Kind "added"}}additive{{else if eq .Kind "removed"}}destructive{{else}}metadata_only{{end}}"
+      style="display:inline-block;min-width:70px">{{.Kind}}</span>
+    {{stamp .At}}
+    · <span class="fp">{{short .From}} → {{short .To}}</span>
+  </p>
+  {{range .Changes}}
+  <div class="change" style="padding-left:0">
+    <span class="cls {{.Class}}">{{.Class}}</span>
+    <div>{{.Summary}}</div>
+  </div>
+  {{end}}
+  <p class="sub" style="margin:6px 0 0">
+    {{if .Caused}}<a href="/requests/{{.RequestID}}">{{.Title}}</a>
+    {{else}}<span class="removed">changed outside schemaver</span> — no request
+    accounts for this{{end}}
+  </p>
+</div>
+{{else}}
+<div class="empty">Nothing recorded for {{.Name}}. Either it has not changed
+since this database was first read, or it is not there.</div>
+{{end}}
+</div>
+{{end}}

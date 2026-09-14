@@ -156,7 +156,7 @@ func New(s *store.Store, setup *auth.Setup, openSignup bool, targets netguard.Po
 		setup: setup, openSignup: openSignup, targets: targets}
 	for _, page := range []string{"fleet", "history", "change", "drift", "login", "signup",
 		"instances", "instance_new", "instance", "requests", "request_new", "request",
-		"activity", "retire", "request_write", "branches", "branch", "settings", "database_new", "adopt"} {
+		"activity", "retire", "request_write", "branches", "branch", "settings", "database_new", "adopt", "object"} {
 		t, err := template.New("layout").Funcs(funcs).ParseFS(files,
 			"templates/layout.html", "templates/"+page+".html")
 		if err != nil {
@@ -182,6 +182,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /change/{id}", s.requireUser(s.change))
 	mux.HandleFunc("GET /drift", s.requireUser(s.drift))
 	mux.HandleFunc("GET /activity", s.requireUser(s.activity))
+	mux.HandleFunc("GET /database/{id}/objects/{name}", s.requireUser(s.object))
 	mux.HandleFunc("GET /databases/{id}/retire", s.requireWriter(s.retire))
 	mux.HandleFunc("POST /databases/{id}/retire", s.requireWriter(s.retire))
 	mux.HandleFunc("POST /databases/{id}/restore", s.requireWriter(s.restore))
@@ -337,9 +338,18 @@ func (s *Server) database(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
+	// What it holds, so a reader can follow one table rather than the whole
+	// schema. A timeline of every change to a database answers "what has
+	// happened here" and never "what has happened to orders", which is the
+	// question somebody actually arrives with.
+	objects, err := scope.Objects(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	s.render(w, r, "history", summary.Name, "history",
 		map[string]any{"Entries": entries, "Database": summary.Name,
-			"Summary": summary})
+			"Summary": summary, "Objects": objects, "DatabaseID": id})
 }
 
 // change shows which objects differ across one recorded transition.

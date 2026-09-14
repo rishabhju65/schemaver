@@ -25,6 +25,24 @@ means.</p>
   </p>
 </div>
 {{end}}
+
+{{if .Objects}}
+{{/* What this database holds, each one a thing with its own history. A timeline
+     of every change answers "what has happened here" and never "what has
+     happened to orders", which is the question somebody actually arrives
+     with. */}}
+<h2>What it holds</h2>
+<p class="sub">Open one to see only what has happened to it.</p>
+<div class="card" style="margin-bottom:18px">
+{{range .Objects}}
+<div class="change">
+  <span class="cls metadata_only" style="min-width:70px">{{.Type}}</span>
+  <div><a href="/database/{{$.DatabaseID}}/objects/{{.Name}}">{{.Name}}</a></div>
+</div>
+{{end}}
+</div>
+{{end}}
+
 <div class="card scroll">
 <table>
 <tr><th>When</th>{{if not .Database}}<th>Database</th><th>Environment</th>{{end}}
