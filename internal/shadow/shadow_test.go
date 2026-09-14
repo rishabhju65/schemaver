@@ -2,11 +2,15 @@ package shadow
 
 import (
 	"context"
-	"github.com/jackc/pgx/v5"
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/rishabhju65/schemaver/internal/render"
 	"github.com/rishabhju65/schemaver/internal/schema"
@@ -186,27 +190,56 @@ func asMismatch(err error, target **MismatchError) bool {
 func TestSweepRemovesAbandoned(t *testing.T) {
 	p, ctx := testPool(t)
 
+	stale := abandoned(t, ctx, p, 2*time.Hour)
+	fresh, err := p.Create(ctx)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	t.Cleanup(func() { _ = fresh.Close() })
+
+	// Nothing is old enough to sweep at this age, not even the stale one.
+	if _, err := p.Sweep(ctx, 24*time.Hour); err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	if !databaseExists(t, ctx, p, stale) {
+		t.Fatal("a database younger than the age given was swept")
+	}
+
+	// At an age the abandoned one exceeds, it goes and the fresh one stays.
+	if _, err := p.Sweep(ctx, time.Hour); err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	if databaseExists(t, ctx, p, stale) {
+		t.Error("an abandoned database survived a sweep that should have taken it")
+	}
+	if _, _, err := withOpenCheck(ctx, fresh); err != nil {
+		t.Errorf("a shadow created moments ago was swept: %v", err)
+	}
+}
+
+// TestSweepWillNotTakeSomethingJustCreated is the floor, and it is what keeps a
+// sweep from being a hazard on a shared server.
+//
+// Create returns as soon as CREATE DATABASE succeeds; the caller connects
+// afterwards. In that window the database has no connections, so a sweep that
+// refuses only databases in use would drop it — which is how one test run took
+// out another's shadow between its creation and its first query.
+func TestSweepWillNotTakeSomethingJustCreated(t *testing.T) {
+	p, ctx := testPool(t)
+
 	db, err := p.Create(ctx)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
 
-	// Nothing is old enough to sweep yet.
-	if _, err := p.Sweep(ctx, time.Hour); err != nil {
+	// Nothing is connected to it yet, and zero means "everything is stale".
+	if _, err := p.Sweep(ctx, 0); err != nil {
 		t.Fatalf("Sweep: %v", err)
 	}
-	if _, _, err := withOpenCheck(ctx, db); err != nil {
-		t.Fatalf("a fresh shadow database was swept: %v", err)
-	}
-
-	// With a zero age everything qualifies, including this one.
-	dropped, err := p.Sweep(ctx, 0)
-	if err != nil {
-		t.Fatalf("Sweep: %v", err)
-	}
-	if dropped < 1 {
-		t.Errorf("swept %d databases, expected at least the one just created", dropped)
+	if !databaseExists(t, ctx, p, db.Name) {
+		t.Error("a database created moments ago, with nothing yet connected to " +
+			"it, was swept as abandoned")
 	}
 }
 
@@ -233,14 +266,16 @@ func withOpenCheck(ctx context.Context, db *DB) (*schema.Schema, schema.Version,
 func TestSweepLeavesLiveDatabasesAlone(t *testing.T) {
 	p, ctx := testPool(t)
 
-	live, err := p.Create(ctx)
+	// Old enough to sweep, so that surviving proves the connection protected
+	// it rather than the minimum age.
+	name := abandoned(t, ctx, p, 2*time.Hour)
+	dsn, err := withDatabase(p.adminDSN, name)
 	if err != nil {
-		t.Fatalf("Create: %v", err)
+		t.Fatalf("dsn: %v", err)
 	}
-	t.Cleanup(func() { _ = live.Close() })
 
 	// Hold a connection open, the way any run in progress would.
-	conn, err := pgx.Connect(ctx, live.dsn)
+	conn, err := pgx.Connect(ctx, dsn)
 	if err != nil {
 		t.Fatalf("connect to the live shadow: %v", err)
 	}
@@ -249,8 +284,8 @@ func TestSweepLeavesLiveDatabasesAlone(t *testing.T) {
 		t.Fatalf("the connection is not usable: %v", err)
 	}
 
-	// A sweep that considers everything stale must still not touch this one.
-	if _, err := p.Sweep(ctx, 0); err != nil {
+	// A sweep that considers this one stale must still not touch it.
+	if _, err := p.Sweep(ctx, time.Hour); err != nil {
 		t.Fatalf("Sweep: %v", err)
 	}
 
@@ -258,18 +293,60 @@ func TestSweepLeavesLiveDatabasesAlone(t *testing.T) {
 	if err := conn.QueryRow(ctx, `SELECT 1`).Scan(new(int)); err != nil {
 		t.Fatalf("a sweep killed a connection to a database in use: %v", err)
 	}
-	var exists bool
-	admin, err := pgx.Connect(ctx, p.adminDSN)
-	if err != nil {
-		t.Fatalf("connect as admin: %v", err)
-	}
-	defer admin.Close(context.Background())
-	if err := admin.QueryRow(ctx,
-		`SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = $1)`,
-		live.Name).Scan(&exists); err != nil {
-		t.Fatalf("check the database still exists: %v", err)
-	}
-	if !exists {
+	if !databaseExists(t, ctx, p, name) {
 		t.Error("a sweep dropped a database that had an open connection")
 	}
+}
+
+// abandoned creates a shadow database that looks as though it was left behind
+// long ago, by writing an old timestamp into its name — which is exactly where
+// Sweep reads an age from, there being no registry to consult.
+//
+// Tests sweep this rather than something freshly created, for the reason Sweep
+// now enforces: on a shared server a sweep that considers everything stale
+// considers every other package's shadows stale too, and packages run in
+// parallel under `go test ./...`.
+func abandoned(t *testing.T, ctx context.Context, p *Pool, age time.Duration) string {
+	t.Helper()
+	var b [6]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		t.Fatalf("name: %v", err)
+	}
+	name := fmt.Sprintf("%s%d_%s", namePrefix,
+		time.Now().Add(-age).UnixMilli(), hex.EncodeToString(b[:]))
+
+	admin, err := pgx.Connect(ctx, p.adminDSN)
+	if err != nil {
+		t.Fatalf("connect to shadow host: %v", err)
+	}
+	defer admin.Close(context.Background())
+	if _, err := admin.Exec(ctx, `CREATE DATABASE "`+name+`"`); err != nil {
+		t.Fatalf("create the abandoned database: %v", err)
+	}
+	t.Cleanup(func() {
+		bg := context.Background()
+		a, err := pgx.Connect(bg, p.adminDSN)
+		if err != nil {
+			return
+		}
+		defer a.Close(bg)
+		a.Exec(bg, `DROP DATABASE IF EXISTS "`+name+`" WITH (FORCE)`)
+	})
+	return name
+}
+
+func databaseExists(t *testing.T, ctx context.Context, p *Pool, name string) bool {
+	t.Helper()
+	admin, err := pgx.Connect(ctx, p.adminDSN)
+	if err != nil {
+		t.Fatalf("connect to shadow host: %v", err)
+	}
+	defer admin.Close(context.Background())
+	var exists bool
+	if err := admin.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = $1)`, name).
+		Scan(&exists); err != nil {
+		t.Fatalf("look for %s: %v", name, err)
+	}
+	return exists
 }

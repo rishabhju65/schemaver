@@ -224,7 +224,11 @@ func (p *Pool) Verify(ctx context.Context, baseDDL, migrationDDL string, want sc
 	return got, nil
 }
 
-// Sweep drops shadow databases older than age.
+// minSweepAge is the youngest a database may be and still be swept.
+const minSweepAge = 30 * time.Second
+
+// Sweep drops shadow databases older than age, and never any younger than
+// minSweepAge whatever it is asked for.
 //
 // A crash between Create and Close leaves a database behind with nothing
 // tracking it, so the creation time is encoded in the name and recovered here.
@@ -242,6 +246,20 @@ func (p *Pool) Sweep(ctx context.Context, age time.Duration) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("list shadow databases: %w", err)
 	}
+	// Never anything younger than this, whatever was asked for. A sweep exists
+	// to clear databases abandoned by a process that died; one created moments
+	// ago is not abandoned, it belongs to somebody still getting to it.
+	//
+	// Create returns as soon as CREATE DATABASE succeeds and the caller
+	// connects afterwards, so a brand-new shadow has no connections for a
+	// moment — and a sweep without FORCE, which refuses databases in use, will
+	// drop it happily because nothing is using it yet. That window is how a
+	// sweep on a shared server takes out another run's shadow between its
+	// creation and its first query.
+	if age < minSweepAge {
+		age = minSweepAge
+	}
+
 	var stale []string
 	cutoff := time.Now().Add(-age).UnixMilli()
 	for rows.Next() {
