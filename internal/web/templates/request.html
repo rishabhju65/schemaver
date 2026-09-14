@@ -212,6 +212,20 @@ now, while the choice is still open — not when it is needed.</p>
     <h2>Changes</h2>
     <p class="sub">Ordered by what can hurt, not by execution order.</p>
     <div class="card">
+      {{/* What this is a change to, before what it does. A reviewer opening a
+           request wants the subject first; the statements are the detail. */}}
+      {{if $r.Objects}}
+      <div style="padding:12px 14px;border-bottom:1px solid var(--line)">
+        <b>{{$r.ObjectSummary.Describe}}</b>
+        <div style="margin-top:6px">
+        {{range $r.Objects}}
+          <span class="cls {{if eq .Kind "added"}}additive{{else if eq .Kind "removed"}}destructive{{else}}metadata_only{{end}}"
+            style="display:inline-block;min-width:70px">{{.Kind}}</span>
+          <code class="fp">{{.Name}}</code><br>
+        {{end}}
+        </div>
+      </div>
+      {{end}}
       {{range $r.ByRisk}}
       <div class="change">
         <span class="cls {{.Class}}">{{.Class}}</span>

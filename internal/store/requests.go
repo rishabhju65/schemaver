@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/rishabhju65/schemaver/internal/diff"
+	"github.com/rishabhju65/schemaver/internal/history"
 	"github.com/rishabhju65/schemaver/internal/schema"
 )
 
@@ -90,6 +91,12 @@ type RequestDetail struct {
 	From, To           schema.Version
 	IrreversibleReason string
 	GeneratedAt        time.Time
+
+	// Objects is which tables, enums and sequences this change touches, and
+	// ObjectSummary counts them. Asked before anything else — "what is this a
+	// change to" — and answered badly by a list of statements.
+	Objects       []history.ObjectChange
+	ObjectSummary history.Summary
 
 	// ByRisk is the change list ordered for review rather than for execution:
 	// destructive first, metadata last. Execution order is a dependency
@@ -218,6 +225,15 @@ func (s *Scope) Request(ctx context.Context, id int64) (*RequestDetail, error) {
 		d.GeneratedAt = *generatedAt
 		if irreversible != nil {
 			d.IrreversibleReason = *irreversible
+		}
+		// Derived from the two ends rather than folded out of ByRisk: the
+		// change list says what happens, and which objects are involved is a
+		// property of the schemas themselves.
+		if before, err := s.Blob(ctx, d.From); err == nil && before != nil {
+			if after, err := s.Blob(ctx, d.To); err == nil && after != nil {
+				d.Objects = history.ObjectsChanged(before, after)
+				d.ObjectSummary = history.Count(d.Objects)
+			}
 		}
 		if mergeBase != nil {
 			d.MergeBase = schema.Version(*mergeBase)

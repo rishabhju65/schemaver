@@ -223,20 +223,15 @@ func (s *Scope) BranchCommits(ctx context.Context, branchID int64) ([]BranchComm
 // independently, then see exactly what diverged. Computed from the two stored
 // schemas rather than accumulated across commits, so a change made and then
 // undone does not appear — what is wanted is the difference, not the journey.
-func (s *Scope) BranchDiff(ctx context.Context, branchID int64) (diff.Result, error) {
+func (s *Scope) BranchDiff(ctx context.Context, branchID int64) (Delta, error) {
 	b, err := s.Branch(ctx, branchID)
 	if err != nil {
-		return diff.Result{}, err
+		return Delta{}, err
 	}
-	base, err := s.Blob(ctx, b.Base)
-	if err != nil {
-		return diff.Result{}, fmt.Errorf("read the schema this branch was cut from: %w", err)
+	if b.Base == b.Head {
+		return Delta{}, nil
 	}
-	head, err := s.Blob(ctx, b.Head)
-	if err != nil {
-		return diff.Result{}, fmt.Errorf("read the branch's schema: %w", err)
-	}
-	return diff.Compute(base, head), nil
+	return s.Between(ctx, b.Base, b.Head)
 }
 
 // CloseBranch ends a branch. Everything it recorded stays readable.

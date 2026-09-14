@@ -121,7 +121,7 @@ func (s *Server) branch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := map[string]any{
-		"B": b, "Diverged": diverged.Changes, "Commits": commits,
+		"B": b, "Diverged": diverged, "Commits": commits,
 		"Candidates": candidates, "Merge": merge,
 	}
 	if msg := r.URL.Query().Get("error"); msg != "" {

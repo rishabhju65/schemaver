@@ -575,3 +575,26 @@ func tbl(name string, cols ...schema.Column) schema.Table {
 func withTables(tables ...schema.Table) *schema.Schema {
 	return &schema.Schema{Namespaces: []schema.Namespace{{Name: "public", Tables: tables}}}
 }
+
+// reachable makes stored schemas readable by a project, the way an observation
+// would: a scoped read needs something of the caller's own to name the schema.
+func reachable(ctx context.Context, t *testing.T, pool *pgxpool.Pool, projectID int64, fingerprints ...string) {
+	t.Helper()
+	var databaseID int64
+	if err := pool.QueryRow(ctx, `
+		SELECT d.id FROM schemaver.database d
+		  JOIN schemaver.instance i ON i.id = d.instance_id
+		 WHERE i.project_id = $1 LIMIT 1`, projectID).Scan(&databaseID); err != nil {
+		t.Fatalf("no database in the project to attach a snapshot to: %v", err)
+	}
+	for _, f := range fingerprints {
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO schemaver.snapshot (database_id, fingerprint, read_ms)
+			VALUES ($1, $2, 1)`, databaseID, f); err != nil {
+			t.Fatalf("make %s reachable: %v", f, err)
+		}
+	}
+}
+
+// schemaVersion is the cast from a stored fingerprint to the typed one.
+func schemaVersion(f string) schema.Version { return schema.Version(f) }

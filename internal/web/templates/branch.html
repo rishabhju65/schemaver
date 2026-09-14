@@ -19,8 +19,23 @@
 <p class="sub">The difference between where this branch was cut and where it is
 now — not the journey. Something added and then taken away again is not a
 divergence.</p>
+{{/* Objects first, then what happened inside them. "Which tables does this
+     touch" is the question somebody asks before any other, and a list of
+     fourteen statements answers it badly. */}}
 <div class="card">
-  {{range .Diverged}}
+  {{if .Diverged.Objects}}
+  <div style="padding:12px 14px;border-bottom:1px solid var(--line)">
+    <b>{{.Diverged.Summary.Describe}}</b>
+    <div style="margin-top:6px">
+    {{range .Diverged.Objects}}
+      <span class="cls {{if eq .Kind "added"}}additive{{else if eq .Kind "removed"}}destructive{{else}}metadata_only{{end}}"
+        style="display:inline-block;min-width:70px">{{.Kind}}</span>
+      <code class="fp">{{.Name}}</code><br>
+    {{end}}
+    </div>
+  </div>
+  {{end}}
+  {{range .Diverged.Changes}}
   <div class="change">
     <span class="cls {{.Class}}">{{.Class}}</span>
     <div>{{.Summary}}<br><code class="fp">{{.ID}}</code></div>
