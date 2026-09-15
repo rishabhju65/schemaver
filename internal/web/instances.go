@@ -254,8 +254,22 @@ func (s *Server) instanceDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// What each database could follow. Per database rather than one shared
+	// list, because each excludes itself — and a database offering itself is
+	// the one choice that cannot work.
+	peers := map[int64][]store.PeerChoice{}
+	for _, d := range dbs {
+		choices, err := scope.PeerChoices(r.Context(), d.ID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		peers[d.ID] = choices
+	}
+
 	m := map[string]any{
 		"Instance": inst, "Databases": dbs, "Environments": envs, "Saved": saved,
+		"Peers": peers,
 	}
 	if saveErr != nil {
 		m["Error"] = saveErr.Error()

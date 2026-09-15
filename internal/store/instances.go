@@ -385,3 +385,85 @@ func (s *Scope) ordered(ctx context.Context, tx pgx.Tx, sourceID, targetID int64
 	}
 	return *sourceRank <= *targetRank, sourceName, targetName, nil
 }
+
+// PeerChoice is a database that could be followed, and where it lives.
+type PeerChoice struct {
+	ID int64
+	// Name is the database; Server is the host it is on. Both are shown,
+	// because a project with a staging and a production server very often has
+	// the same database name on each, and "neondb" twice is not a choice.
+	Name   string
+	Server string
+	// Environment is carried so the list can be read at a glance: the one
+	// somebody wants is almost always the one ranked below.
+	Environment string
+	// SameServer marks the ones that used to be the only options, so the list
+	// can keep them together rather than interleaving by name.
+	SameServer bool
+
+	// Managed reports whether the database is actually read.
+	//
+	// An unmanaged one can be followed and the result is a dead end: nothing
+	// observes it, so its schema never moves, drift against it is never
+	// comparable and the gate waiting on it never opens. Offered anyway, with
+	// this said — hiding it would turn "why is my database not in the list"
+	// into a mystery, and the answer is worth more than the absence.
+	Managed bool
+}
+
+// Label is how the choice reads in a list.
+func (p PeerChoice) Label() string {
+	label := p.Name + " · " + p.Server
+	if p.Environment != "" {
+		label += " (" + p.Environment + ")"
+	}
+	if !p.Managed {
+		label += " — not managed, so nothing would ever be compared"
+	}
+	return label
+}
+
+// PeerChoices lists every database in the project that could be followed.
+//
+// Every database, not every sibling. A change reaches production through
+// staging, and staging is normally on its own server precisely so that its load
+// never touches production's — so offering only databases on the same host
+// makes the promotion chain unusable for the arrangement it exists to serve.
+// Nothing underneath ever required them to be neighbours: the peer is validated
+// against the project, the cycle check walks the chain wherever it goes, and the
+// direction check compares environments rather than addresses.
+//
+// The database itself is excluded, which matters more now the list spans
+// servers: a name that appears on two hosts is easy to pick by mistake, and a
+// database following itself is a cycle of one.
+func (s *Scope) PeerChoices(ctx context.Context, exclude int64) ([]PeerChoice, error) {
+	rows, err := s.store.pool.Query(ctx, `
+		SELECT d.id, d.name, i.name, COALESCE(e.name, ''),
+		       d.instance_id = (SELECT instance_id FROM schemaver.database WHERE id = $1),
+		       d.managed
+		  FROM schemaver.database d
+		  JOIN schemaver.instance i ON i.id = d.instance_id
+		  LEFT JOIN schemaver.environment e ON e.id = d.environment_id
+		 WHERE i.project_id = ANY($2)
+		   AND d.id <> $1
+		   AND d.archived_at IS NULL AND d.retired_at IS NULL
+		   AND i.archived_at IS NULL
+		 ORDER BY d.managed DESC,
+		          (d.instance_id = (SELECT instance_id FROM schemaver.database WHERE id = $1)) DESC,
+		          i.name, d.name`, exclude, s.projects)
+	if err != nil {
+		return nil, fmt.Errorf("list databases that could be followed: %w", err)
+	}
+	defer rows.Close()
+
+	var out []PeerChoice
+	for rows.Next() {
+		var p PeerChoice
+		if err := rows.Scan(&p.ID, &p.Name, &p.Server, &p.Environment,
+			&p.SameServer, &p.Managed); err != nil {
+			return nil, fmt.Errorf("scan peer choice: %w", err)
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}

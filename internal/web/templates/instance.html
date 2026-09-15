@@ -49,12 +49,18 @@ Leave it unset for a database nothing precedes.</p>
     </select>
   </td>
   <td>
+    {{/* Every database in the project, not the siblings on this server. A
+         change reaches production through staging, and staging is normally on
+         its own host precisely so its load never touches production's — so a
+         list of neighbours makes the promotion chain unusable for the
+         arrangement it exists to serve. The server is shown with each, because
+         the same database name on two hosts is not a choice. */}}
     <select name="peer-{{.ID}}" {{if not $.CanWrite}}disabled{{end}}>
       <option value="">—</option>
-      {{$self := .ID}}{{$peer := .PeerID}}
-      {{range $.Databases}}{{if ne .ID $self}}
-      <option value="{{.ID}}" {{if eq64 $peer .ID}}selected{{end}}>{{.Name}}</option>
-      {{end}}{{end}}
+      {{$peer := .PeerID}}
+      {{range index $.Peers .ID}}
+      <option value="{{.ID}}" {{if eq64 $peer .ID}}selected{{end}}>{{.Label}}</option>
+      {{end}}
     </select>
   </td>
   <td>{{if .Retired}}<span class="removed">retired</span>
