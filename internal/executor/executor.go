@@ -57,12 +57,31 @@ const (
 type Executor struct {
 	store *store.Store
 	log   *slog.Logger
-	// StatementTimeout and LockTimeout bound every statement. An ALTER queued
-	// behind a long read blocks every later query on that table, so failing fast
-	// is the only safe default — a migration that cannot get its lock promptly
-	// should give up rather than take the table down while it waits.
+	// StatementTimeout and LockTimeout bound every statement inside a
+	// transaction. An ALTER queued behind a long read blocks every later query
+	// on that table, so failing fast is the only safe default — a migration
+	// that cannot get its lock promptly should give up rather than take the
+	// table down while it waits.
 	StatementTimeout time.Duration
 	LockTimeout      time.Duration
+
+	// ConcurrentLockTimeout bounds a statement that runs outside one, which in
+	// practice means a concurrent index build. Every part of the argument above
+	// inverts for it.
+	//
+	// CREATE INDEX CONCURRENTLY takes ShareUpdateExclusiveLock, which does not
+	// conflict with SELECT, INSERT, UPDATE or DELETE — so unlike an ALTER, it
+	// blocks nobody while it waits and waiting costs nothing. It also waits on
+	// concurrent transactions internally, twice, and those waits go through the
+	// lock manager, so a lock timeout aborts them. Sharing the transactional
+	// value meant a three-hour build was abandoned because some transaction had
+	// been open for ten seconds — and abandoning one leaves an index PostgreSQL
+	// will never use.
+	//
+	// Bounded rather than unlimited. Waiting forever behind a genuinely stuck
+	// transaction is worse than failing: an execution that never returns says
+	// nothing, and one that gives up says what it was waiting for.
+	ConcurrentLockTimeout time.Duration
 }
 
 func New(s *store.Store, log *slog.Logger) *Executor {
@@ -71,8 +90,9 @@ func New(s *store.Store, log *slog.Logger) *Executor {
 	}
 	return &Executor{
 		store: s, log: log,
-		StatementTimeout: 30 * time.Minute,
-		LockTimeout:      10 * time.Second,
+		StatementTimeout:      30 * time.Minute,
+		LockTimeout:           10 * time.Second,
+		ConcurrentLockTimeout: 15 * time.Minute,
 	}
 }
 
@@ -379,12 +399,16 @@ func (e *Executor) runStandalone(ctx context.Context, conn *pgx.Conn, st store.S
 	e.log.Info("applying outside a transaction", "step", st.Ordinal, "change", st.ChangeID)
 	// A concurrent index build must not be cut short by a statement timeout: it
 	// is expected to take a long time, and being killed leaves an invalid index
-	// behind. The lock timeout still applies.
+	// behind.
 	if _, err := conn.Exec(ctx, "SET statement_timeout = 0"); err != nil {
 		return fmt.Errorf("clear statement timeout: %w", err)
 	}
+	// And its own lock timeout, not the transactional one. This statement
+	// blocks nobody while it waits, and the wait it is doing is for other
+	// transactions to finish rather than for a lock somebody is holding
+	// against it.
 	if _, err := conn.Exec(ctx, fmt.Sprintf("SET lock_timeout = %d",
-		e.LockTimeout.Milliseconds())); err != nil {
+		e.ConcurrentLockTimeout.Milliseconds())); err != nil {
 		return fmt.Errorf("set lock timeout: %w", err)
 	}
 	if _, err := conn.Exec(ctx, st.SQL); err != nil {
