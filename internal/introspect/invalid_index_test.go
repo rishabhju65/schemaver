@@ -117,9 +117,17 @@ func TestAValidIndexSerializesAsItAlwaysDid(t *testing.T) {
 		CREATE UNIQUE INDEX t_code_idx ON t (code);
 	`)
 
-	got, err := Schema(ctx, conn)
+	full, err := Schema(ctx, conn)
 	if err != nil {
 		t.Fatalf("introspect: %v", err)
+	}
+	// Narrowed to this test's own namespace. Schema reads the whole database,
+	// and `go test ./...` runs packages against a shared one — a concurrent
+	// index build in another package is briefly invalid, and judging it here
+	// would fail a test that has nothing to do with it.
+	got := only(full, "valid_idx_probe")
+	if len(got.Namespaces) == 0 {
+		t.Fatal("the probe namespace is missing from the introspected schema")
 	}
 	canonical, err := schema.Canonical(got)
 	if err != nil {
@@ -148,4 +156,16 @@ func containsInvalidKey(canonical []byte) bool {
 		}
 	}
 	return false
+}
+
+// only returns s carrying just the named namespace.
+func only(s *schema.Schema, name string) *schema.Schema {
+	out := *s
+	out.Namespaces = nil
+	for _, ns := range s.Namespaces {
+		if ns.Name == name {
+			out.Namespaces = append(out.Namespaces, ns)
+		}
+	}
+	return &out
 }
