@@ -17,7 +17,7 @@ type RenameAnswer struct {
 	Note    string
 }
 
-// AnswerRename records whether a dropped-and-added column is one column renamed.
+// AnswerRename records whether a dropped-and-added pair is one thing renamed.
 //
 // Both answers settle the question and only one changes the statements. Saying
 // "not a rename" confirms that the drop already in the plan is what was meant,
@@ -32,7 +32,11 @@ func (s *Scope) AnswerRename(ctx context.Context, actorID, requestID int64, r di
 	if err := s.requireWrite(); err != nil {
 		return err
 	}
-	if r.Namespace == "" || r.Table == "" || r.From == "" || r.To == "" {
+	// The table is deliberately allowed to be empty: that is what says the
+	// subject is the table itself rather than a column in one. Nothing else may
+	// be blank, and no column rename has an empty table, so the two kinds of
+	// answer stay distinguishable in one row.
+	if r.Namespace == "" || r.From == "" || r.To == "" {
 		return errors.New("which rename question is this answering?")
 	}
 
@@ -68,12 +72,20 @@ func (s *Scope) AnswerRename(ctx context.Context, actorID, requestID int64, r di
 }
 
 func renameNote(r diff.Rename, renamed bool) string {
-	if renamed {
-		return fmt.Sprintf("%s.%s.%s is %s renamed; its data comes with it",
-			r.Namespace, r.Table, r.From, r.To)
+	if r.OfTable() {
+		if renamed {
+			return fmt.Sprintf("%s is %s renamed; its rows come with it",
+				r.Subject(), r.To)
+		}
+		return fmt.Sprintf("%s is not %s renamed; all of its rows are discarded",
+			r.Subject(), r.To)
 	}
-	return fmt.Sprintf("%s.%s.%s is not %s renamed; its data is discarded",
-		r.Namespace, r.Table, r.From, r.To)
+	if renamed {
+		return fmt.Sprintf("%s is %s renamed; its data comes with it",
+			r.Subject(), r.To)
+	}
+	return fmt.Sprintf("%s is not %s renamed; its data is discarded",
+		r.Subject(), r.To)
 }
 
 // ConfirmedRenames reads the answers that say "yes, renamed", which are the

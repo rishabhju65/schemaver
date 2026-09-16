@@ -268,6 +268,8 @@ func TestAddServerFormShowsTheEngineAsAChoice(t *testing.T) {
 		t.Fatalf("render: %v", err)
 	}
 	page := out.String()
+	t.Logf("PAGE-LEN=%d has-unanswered=%v has-orders=%v",
+		len(page), strings.Contains(page, "Unanswered question"), strings.Contains(page, "orders"))
 
 	if !strings.Contains(page, `<select name="engine"`) {
 		t.Error("the engine is not offered as a choice; a limit nobody can see " +
@@ -339,5 +341,66 @@ func TestProposeFormRemembersItsSelection(t *testing.T) {
 	// about what it will submit.
 	if n := strings.Count(page, "selected"); n != 2 {
 		t.Errorf("%d options marked selected across two lists, want 2", n)
+	}
+}
+
+// TestATableRenameQuestionReadsAsATable checks the page for the case where the
+// subject has no column.
+//
+// A table rename carries an empty table name, which is what distinguishes it
+// from a column rename. Every part of the page that assumed a column would
+// render "public..orders" and describe a table as a column — a page that runs
+// without error and tells somebody the wrong thing about the one decision the
+// engine refuses to make for them.
+func TestATableRenameQuestionReadsAsATable(t *testing.T) {
+	s := server(t, auth.Completed(), false)
+
+	detail := &store.RequestDetail{
+		RequestSummary: store.RequestSummary{
+			ID: 11, Title: "rename orders", Author: "admin@example.com",
+			State: "OPEN", Database: "shop_prod", CreatedAt: time.Now(),
+		},
+		// A migration has to exist: a rename question is raised against a
+		// generated plan, and the page shows nothing about renames before one.
+		MigrationID: 13,
+		Approval:    &store.ApprovalState{MigrationID: 13, ProofState: "unproven"},
+	}
+
+	var out strings.Builder
+	if err := s.tmpl["request"].ExecuteTemplate(&out, "layout", map[string]any{
+		"R": detail, "Title": detail.Title, "Nav": "requests", "CSRF": "t",
+		"CanWrite": true, "Open": true,
+		"OpenRenames": []diff.RenameCandidate{{
+			Namespace: "public", Table: "", From: "orders", To: "purchase",
+			Confidence: diff.Likely,
+			Question: "Is table public.orders being renamed to purchase, or " +
+				"dropped and replaced? Renaming keeps every row; dropping " +
+				"discards them all.",
+		}},
+		"RenameAnswers": []store.RenameAnswer{{
+			Rename:  diff.Rename{Namespace: "public", Table: "", From: "orders", To: "purchase"},
+			Renamed: true, By: "admin@example.com",
+		}},
+	}); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	page := out.String()
+
+	for _, want := range []string{
+		"Is table public.orders being renamed to purchase",
+		"public.orders → purchase",
+		"is the same table under a new name, and keeps every row",
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the page never says %q", want)
+		}
+	}
+	for _, unwanted := range []string{
+		"public..orders",                      // the empty table name showing through
+		"is the same column under a new name", // a table described as a column
+	} {
+		if strings.Contains(page, unwanted) {
+			t.Errorf("the page says %q, which is wrong for a table", unwanted)
+		}
 	}
 }

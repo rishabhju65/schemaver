@@ -171,7 +171,7 @@ now, while the choice is still open — not when it is needed.</p>
      was meant, which is the more dangerous of the two. */}}
 <div class="banner warn">
   <b>Unanswered question.</b> {{.Question}}<br>
-  <span class="fp">confidence: {{.Confidence}} · {{.From}} → {{.To}} ({{.Type}})</span>
+  <span class="fp">confidence: {{.Confidence}} · {{.From}} → {{.To}}{{if .Type}} ({{.Type}}){{end}}</span>
   {{if and $.CanWrite $.Open}}
   <form method="post" action="/requests/{{$r.ID}}/act" class="inline-form">
     <input type="hidden" name="csrf" value="{{$.CSRF}}">
@@ -196,9 +196,14 @@ now, while the choice is still open — not when it is needed.</p>
   <div class="change">
     <span class="cls {{if .Renamed}}metadata_only{{else}}destructive{{end}}">
       {{if .Renamed}}renamed{{else}}dropped{{end}}</span>
-    <div>{{.Namespace}}.{{.Table}}.{{.From}} → {{.To}}
-      {{if .Renamed}}is the same column under a new name, and keeps its data{{else}}is
-      two different columns; {{.From}}'s data is discarded{{end}}<br>
+    <div>{{.Subject}} → {{.To}}
+      {{if .OfTable}}
+        {{if .Renamed}}is the same table under a new name, and keeps every row{{else}}is
+        two different tables; every row in {{.From}} is discarded{{end}}
+      {{else}}
+        {{if .Renamed}}is the same column under a new name, and keeps its data{{else}}is
+        two different columns; {{.From}}'s data is discarded{{end}}
+      {{end}}<br>
       <span class="fp">answered by {{.By}}{{if .Note}} · {{.Note}}{{end}}</span></div>
   </div>
   {{end}}
