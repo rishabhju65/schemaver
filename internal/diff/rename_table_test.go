@@ -218,3 +218,97 @@ func TestAnAnswerIsIgnoredOnceTheSchemasMoved(t *testing.T) {
 		t.Error("the real drop was lost to a stale answer")
 	}
 }
+
+// fullTable is a table as a real one arrives: with a primary key and an index,
+// both named after the table, which is what the engine does by default.
+func fullTable(name string) *schema.Schema {
+	return &schema.Schema{Namespaces: []schema.Namespace{{
+		Name: "public",
+		Tables: []schema.Table{{
+			Name: name,
+			Columns: []schema.Column{
+				{Name: "id", Type: "bigint"},
+				{Name: "customer_id", Type: "bigint"},
+			},
+			Constraints: []schema.Constraint{
+				{Name: name + "_pkey", Type: schema.PrimaryKey, Columns: []string{"id"}},
+			},
+			Indexes: []schema.Index{
+				{Name: name + "_customer_idx", Method: "btree", Columns: []string{"customer_id"}},
+			},
+		}},
+	}}}
+}
+
+// TestEverythingElseComesAfterTheRename is the ordering the first version got
+// wrong, and it broke the feature for every table anybody actually has.
+//
+// RENAME TO does not rename a table's indexes or constraints, so a renamed
+// table arrives still carrying orders_pkey and orders_customer_idx while the
+// target calls them purchase_pkey and purchase_customer_idx. The diff drops the
+// old ones and adds the new ones — and every one of those changes names the
+// table by the name it will have, because that is the name it is compared
+// under. Run before the rename, they address a table that does not exist yet.
+func TestEverythingElseComesAfterTheRename(t *testing.T) {
+	r := ComputeWith(fullTable("orders"), fullTable("purchase"), []Rename{
+		{Namespace: "public", From: "orders", To: "purchase"},
+	})
+
+	renameAt := -1
+	for i, c := range r.Changes {
+		if c.Kind == RenameTable {
+			renameAt = i
+			break
+		}
+	}
+	if renameAt < 0 {
+		t.Fatal("no rename")
+	}
+	for i, c := range r.Changes {
+		if i == renameAt || c.Kind == RenameTable {
+			continue
+		}
+		if c.Table != "purchase" {
+			continue
+		}
+		if i < renameAt {
+			t.Errorf("%s on %s is ordered at %d, before the rename at %d; at that "+
+				"point no table has that name", c.Kind, c.Table, i, renameAt)
+		}
+	}
+}
+
+// TestRenamingIntoAnOccupiedNameIsRefused keeps a confirmed answer from
+// producing a migration that cannot run.
+//
+// Nothing proposes this — a name held by a table in both schemas is never
+// created, so it is never half of a candidate. It arrives from an answer kept
+// across a change to the schemas, and honouring it produced a rename onto a
+// table that was still standing, with the occupant silently altered to match
+// rather than dropped.
+func TestRenamingIntoAnOccupiedNameIsRefused(t *testing.T) {
+	from := &schema.Schema{Namespaces: []schema.Namespace{{
+		Name: "public",
+		Tables: []schema.Table{
+			{Name: "orders", Columns: []schema.Column{{Name: "id", Type: "bigint"}}},
+			{Name: "purchase", Columns: []schema.Column{{Name: "old", Type: "text"}}},
+		},
+	}}}
+	to := &schema.Schema{Namespaces: []schema.Namespace{{
+		Name: "public",
+		Tables: []schema.Table{
+			{Name: "purchase", Columns: []schema.Column{{Name: "id", Type: "bigint"}}},
+		},
+	}}}
+
+	r := ComputeWith(from, to, []Rename{
+		{Namespace: "public", From: "orders", To: "purchase"},
+	})
+	if find(r, RenameTable) != nil {
+		t.Error("renamed onto a name another table still holds")
+	}
+	if find(r, DropTable) == nil {
+		t.Error("orders is neither renamed nor dropped, so it survives a " +
+			"migration that says it goes")
+	}
+}

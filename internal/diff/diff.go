@@ -269,6 +269,14 @@ func tableChanges(ns string, a, b *schema.Namespace, confirmed []Rename) []Chang
 		if _, arrived := after[r.To]; !arrived {
 			continue
 		}
+		// Refused where another table already holds the new name. Renaming into
+		// an occupied name cannot be expressed as one statement — the occupant
+		// has to go first, and whether it should is a different question from
+		// the one that was answered. Left as the drop and create it reads as,
+		// which is correct and loses nothing that was not already going.
+		if _, occupied := before[r.To]; occupied {
+			continue
+		}
 		renamedFrom[r.From] = r.To
 		renamedTo[r.To] = r.From
 	}
