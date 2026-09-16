@@ -181,6 +181,16 @@ func statementsFor(c diff.Change, before, after objects) []Statement {
 		return out
 	case diff.DropTable:
 		return one(fmt.Sprintf("DROP TABLE %s;", table))
+	case diff.RenameTable:
+		// The table case of the same bargain the column rename makes: one
+		// catalogue entry is relabelled and every row stays where it is,
+		// instead of a DROP that discards all of them and a CREATE that
+		// produces an empty table.
+		//
+		// RENAME TO takes a bare name. The table cannot change schema here, and
+		// qualifying the new name would be a syntax error rather than a move.
+		return one(fmt.Sprintf("ALTER TABLE %s RENAME TO %s;",
+			table, ident(c.To)))
 
 	case diff.AddColumn:
 		col, ok := after.columns[object]
