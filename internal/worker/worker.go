@@ -47,6 +47,22 @@ type Config struct {
 	// everything downstream still speaks as though it did.
 	Shadow *shadow.Pool
 
+	// SweepInterval is how often abandoned shadow databases are cleared, and
+	// SweepAge is how old one must be before it is considered abandoned.
+	//
+	// The age is generous on purpose. A sweep recognises databases by name, not
+	// by having created them, so on a shared server the ones it finds may
+	// belong to another deployment or a test run. Dropping without FORCE
+	// already refuses any database in use, which is the real safety property;
+	// the age covers the gap that leaves — a shadow is created before anything
+	// connects to it, and in that window it is idle without being abandoned.
+	//
+	// The two failures are not symmetric. A database left too long costs disk
+	// on a server we own. One swept while somebody was still using it fails
+	// their proof for a reason nothing in the product explains.
+	SweepInterval time.Duration
+	SweepAge      time.Duration
+
 	// ExecutionConcurrency is a separate pool for migrations. Separate because a
 	// migration can hold a worker for an hour: sharing one pool would let a
 	// handful of long migrations stop drift detection entirely for that hour.
@@ -77,6 +93,15 @@ func (c *Config) setDefaults() {
 	}
 	if c.ExecutionConcurrency <= 0 {
 		c.ExecutionConcurrency = 4
+	}
+	if c.SweepInterval <= 0 {
+		c.SweepInterval = time.Hour
+	}
+	if c.SweepAge <= 0 {
+		// Longer than ExecutionTimeout, so a migration running for every minute
+		// it is allowed cannot have the database proving it swept out from
+		// under it.
+		c.SweepAge = 6 * time.Hour
 	}
 	if c.Budget.Ceiling == 0 {
 		c.Budget = store.DefaultBudget()
@@ -122,6 +147,14 @@ func (w *Worker) Run(ctx context.Context) error {
 		w.schedule(ctx)
 	}()
 
+	if w.cfg.Shadow != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			w.sweep(ctx)
+		}()
+	}
+
 	for i := 0; i < w.cfg.Concurrency; i++ {
 		wg.Add(1)
 		go func(n int) {
@@ -165,6 +198,50 @@ func (w *Worker) schedule(ctx context.Context) {
 				w.log.Debug("scheduled work", "jobs", n)
 			}
 		}
+	}
+}
+
+// sweep clears shadow databases abandoned by a process that died.
+//
+// Every shadow is dropped by the run that created it, so in a process that
+// exits cleanly there is nothing here to do. A crash between creating one and
+// closing it leaves a full database behind with nothing tracking it — the
+// creation time is encoded in the name precisely so that a later run can
+// recognise it — and without this an unlucky restart loop fills the server.
+//
+// Run once at startup before the ticker, because a restart is the event that
+// produces the leavings: the process that died is the one that just came back.
+func (w *Worker) sweep(ctx context.Context) {
+	tick := time.NewTicker(w.cfg.SweepInterval)
+	defer tick.Stop()
+
+	w.sweepOnce(ctx)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+			w.sweepOnce(ctx)
+		}
+	}
+}
+
+func (w *Worker) sweepOnce(ctx context.Context) {
+	n, err := w.cfg.Shadow.Sweep(ctx, w.cfg.SweepAge)
+	if err != nil {
+		// Logged and not retried. The next tick is the retry, and a sweep that
+		// cannot run costs disk rather than correctness — nothing waits on it.
+		if ctx.Err() == nil {
+			w.log.Warn("sweeping abandoned shadow databases failed", "error", err)
+		}
+		return
+	}
+	if n > 0 {
+		// Worth a line at info: every one of these is a database some earlier
+		// process died holding, which is a thing somebody may want to know
+		// happened even though it has now been cleaned up.
+		w.log.Info("dropped abandoned shadow databases",
+			"count", n, "older_than", w.cfg.SweepAge)
 	}
 }
 
