@@ -357,6 +357,8 @@ func (w *Worker) handle(ctx context.Context, job *store.Job) error {
 		return w.derive(ctx, job.TargetID)
 	case store.KindBranchWrite:
 		return w.branchWrite(ctx, job.TargetID)
+	case store.KindRebase:
+		return w.rebase(ctx, job.TargetID)
 	default:
 		return fmt.Errorf("unknown job kind %q", job.Kind)
 	}
@@ -584,6 +586,37 @@ func (w *Worker) read(ctx context.Context, t *store.Target) error {
 	if changed {
 		w.log.Info("schema changed",
 			"database", t.Name, "version", fingerprint.Short())
+		// Every open request against this database was planning from the
+		// schema that has just been left behind. Queued rather than done here,
+		// because rebuilding a plan means diffing schemas and can mean
+		// standing up a throwaway database, and an observation should not be
+		// held open for that.
+		//
+		// Logged and not returned on failure: the observation succeeded, and
+		// losing it because the follow-up could not be queued would trade the
+		// reading for the reaction to it.
+		if err := w.store.EnqueueRebase(ctx, t.DatabaseID); err != nil {
+			w.log.Warn("could not queue a rebase of open requests",
+				"database", t.DatabaseID, "error", err)
+		}
+	}
+	return nil
+}
+
+// rebase brings every open request against one database up to date with where
+// that database now is.
+//
+// Runs on the observation pool rather than the execution one: it plans, it
+// never applies, and the work is bounded by how many requests are open.
+func (w *Worker) rebase(ctx context.Context, databaseID int64) error {
+	out, err := w.store.RebaseOpenRequests(ctx, databaseID)
+	if err != nil {
+		return err
+	}
+	if out.Rebuilt > 0 || out.Conflict > 0 {
+		w.log.Info("rebuilt open requests against a moved database",
+			"database", databaseID, "rebuilt", out.Rebuilt,
+			"conflicted", out.Conflict)
 	}
 	return nil
 }

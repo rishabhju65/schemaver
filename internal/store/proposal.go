@@ -90,6 +90,8 @@ var ErrNotObserved = errors.New("one of these databases has not been read yet")
 // what a reviewer approved stays inspectable — and because approvals record the
 // fingerprint pair they concerned, superseding one silently withdraws its
 // approvals without anything having to invalidate them.
+// An actorID of zero means schemaver generated this on its own behalf; see the
+// attribution note where the event is recorded.
 func (s *Scope) GenerateMigration(ctx context.Context, actorID, requestID int64) (id int64, err error) {
 	if err := s.requireWrite(); err != nil {
 		return 0, err
@@ -314,8 +316,14 @@ func (s *Scope) GenerateMigration(ctx context.Context, actorID, requestID int64)
 			len(result.Changes), len(statements), result.Summary.Destructive,
 			schema.Version(*fromFP).Short(), schema.Version(*toFP).Short()))
 	}
+	// Zero means schemaver did this rather than a person — a rebase after the
+	// database moved under an open request. Left unattributed rather than
+	// credited to the author, who did not ask for it and may disagree with the
+	// result.
+	if actorID != 0 {
+		generated = generated.By(actorID)
+	}
 	s.record(ctx, generated.
-		By(actorID).
 		OnRequest(requestID).
 		OnMigration(migrationID).
 		With(map[string]any{
