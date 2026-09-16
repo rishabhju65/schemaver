@@ -32,6 +32,7 @@ const (
 
 	CreateTable Kind = "create_table"
 	DropTable   Kind = "drop_table"
+	RenameTable Kind = "rename_table"
 
 	AddColumn        Kind = "add_column"
 	RenameColumn     Kind = "rename_column"
@@ -159,7 +160,7 @@ func classOf(k Kind) Class {
 		AddColumn, AddEnumLabel:
 		return Additive
 
-	case RenameColumn:
+	case RenameColumn, RenameTable:
 		// The catalogue entry is relabelled and not a row is touched, which is
 		// the entire reason for confirming one rather than running the
 		// drop-and-add it would otherwise be read as.

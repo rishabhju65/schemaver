@@ -26,6 +26,11 @@ const (
 
 	phaseCreateNamespace
 	phaseCreateType // enums and sequences, before the columns that need them
+	// After every drop and before every create, for the same reason the column
+	// rename sits where it does: renaming orders to order while creating a new
+	// orders needs the rename first, and renaming into a name a dropped table
+	// still holds needs the drop first.
+	phaseRenameTable
 	phaseCreateTable
 	// Before columns are added, and after they are dropped. Both orderings
 	// matter: renaming a to b while adding a new a would rename the wrong
@@ -61,6 +66,8 @@ func phaseOf(k Kind) int {
 		return phaseCreateNamespace
 	case CreateEnum, AddEnumLabel, AlterEnum, CreateSequence, AlterSequence:
 		return phaseCreateType
+	case RenameTable:
+		return phaseRenameTable
 	case CreateTable:
 		return phaseCreateTable
 	case RenameColumn:

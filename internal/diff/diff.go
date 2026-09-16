@@ -55,9 +55,11 @@ func ComputeWith(from, to *schema.Schema, confirmed []Rename) Result {
 	}
 
 	ordered := Order(changes)
+	renames := findRenames(ordered)
+	renames = append(renames, findTableRenames(ordered, a, b)...)
 	return Result{
 		Changes: ordered,
-		Renames: findRenames(ordered),
+		Renames: renames,
 		Summary: Count(ordered),
 	}
 }
@@ -248,8 +250,38 @@ func tableChanges(ns string, a, b *schema.Namespace, confirmed []Rename) []Chang
 		after[t.Name] = t
 	}
 
+	// Table renames confirmed for this namespace, read both ways: the drop and
+	// the create are found in separate passes below and each has to know it is
+	// half of one rename.
+	//
+	// Checked against the schemas rather than trusted, for the same reason the
+	// column case is: an answer kept from before they moved must not rename a
+	// table that is not there, or into a name that no longer appears.
+	renamedFrom := map[string]string{}
+	renamedTo := map[string]string{}
+	for _, r := range confirmed {
+		if !r.OfTable() || r.Namespace != ns {
+			continue
+		}
+		if _, present := before[r.From]; !present {
+			continue
+		}
+		if _, arrived := after[r.To]; !arrived {
+			continue
+		}
+		renamedFrom[r.From] = r.To
+		renamedTo[r.To] = r.From
+	}
+
 	var out []Change
 	for name := range before {
+		if to, renamed := renamedFrom[name]; renamed {
+			c := newChange(RenameTable, ns, name, "",
+				fmt.Sprintf("rename table %s.%s to %s, keeping its rows", ns, name, to))
+			c.From, c.To = name, to
+			out = append(out, c)
+			continue
+		}
 		if _, ok := after[name]; !ok {
 			out = append(out, newChange(DropTable, ns, name, "",
 				fmt.Sprintf("drop table %s.%s and all its rows", ns, name)))
@@ -257,9 +289,24 @@ func tableChanges(ns string, a, b *schema.Namespace, confirmed []Rename) []Chang
 	}
 	for name, t := range after {
 		old, ok := before[name]
+		// A name whose table was renamed away is free again. What stands here
+		// under it is a new table that happens to have inherited the name, not
+		// the one that used to hold it — that one is now called something else
+		// and is being compared under its new name below.
+		if _, renamedAway := renamedFrom[name]; renamedAway {
+			ok = false
+		}
 		if !ok {
-			out = append(out, tableCreation(ns, t)...)
-			continue
+			// A table that arrived under a new name is the one that left under
+			// the old one, so what it needs is not creating but whatever else
+			// changed about it — compared under the name it now has, because
+			// the rename is ordered before every change here.
+			from, renamed := renamedTo[name]
+			if !renamed {
+				out = append(out, tableCreation(ns, t)...)
+				continue
+			}
+			old = before[from]
 		}
 		out = append(out, columnChanges(ns, name, old, t, confirmed)...)
 		out = append(out, constraintChanges(ns, name, old, t)...)
