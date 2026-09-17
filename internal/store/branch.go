@@ -39,6 +39,17 @@ type Branch struct {
 	// that does.
 	WriteError string
 
+	// Applying is a write that has been accepted and not yet finished, with
+	// Pending the statements it is running.
+	//
+	// A write is applied to a throwaway database and the result read back,
+	// which takes seconds, so the button cannot report the outcome. Without
+	// this the page after pressing it is indistinguishable from the page
+	// before, and the only evidence anything happened arrives minutes later on
+	// a screen nobody is looking at.
+	Applying bool
+	Pending  string
+
 	ClosedAt     *time.Time
 	ClosedBy     string
 	ClosedReason string
@@ -125,6 +136,7 @@ const branchColumns = `
 	    (SELECT count(*) FROM schemaver.branch_commit c WHERE c.branch_id = b.id),
 	    COALESCE(u.email, 'removed user'), b.created_at,
 	    COALESCE(b.write_error, ''),
+	    b.pending_sql IS NOT NULL, COALESCE(b.pending_sql, ''),
 	    b.closed_at, COALESCE(cb.email, ''), COALESCE(b.closed_reason, '')`
 
 func scanBranch(row pgx.Row) (*Branch, error) {
@@ -132,6 +144,7 @@ func scanBranch(row pgx.Row) (*Branch, error) {
 	var base, head string
 	if err := row.Scan(&b.ID, &b.Name, &b.Description, &b.Origin, &b.OriginID,
 		&base, &head, &b.Commits, &b.CreatedBy, &b.CreatedAt, &b.WriteError,
+		&b.Applying, &b.Pending,
 		&b.ClosedAt, &b.ClosedBy, &b.ClosedReason); err != nil {
 		return nil, err
 	}

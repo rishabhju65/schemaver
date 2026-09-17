@@ -10,6 +10,17 @@
 {{if $b.Description}}<p class="sub">{{$b.Description}}</p>{{end}}
 
 {{if .Error}}<p class="banner err" style="white-space:pre-wrap">{{.Error}}</p>{{end}}
+{{if $b.Applying}}
+{{/* Pressing the button has to visibly do something. Applying a write means
+     building a throwaway database, running the statements and reading the
+     result back, which takes seconds — far too long to hold the click open, and
+     long enough that a page identical to the one before it reads as nothing
+     having happened. This page refreshes itself until the answer arrives. */}}
+<p class="banner warn"><b>Applying these statements.</b> They are being run
+against a throwaway copy to find out what schema they produce. This page will
+update itself when that finishes — usually a few seconds.<br>
+<span class="fp" style="white-space:pre-wrap">{{$b.Pending}}</span></p>
+{{end}}
 {{if $b.WriteError}}
 <p class="banner err"><b>The last statements written here did not apply.</b><br>
 <span class="fp" style="white-space:pre-wrap">{{$b.WriteError}}</span></p>

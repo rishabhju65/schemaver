@@ -123,6 +123,9 @@ func (s *Server) branch(w http.ResponseWriter, r *http.Request) {
 	data := map[string]any{
 		"B": b, "Diverged": diverged, "Commits": commits,
 		"Candidates": candidates, "Merge": merge,
+		// Only while a write is genuinely in flight. A page that reloads when
+		// nothing is happening throws away whatever the reader was doing.
+		"Refresh": b.Applying,
 	}
 	if msg := r.URL.Query().Get("error"); msg != "" {
 		data["Error"] = errors.New(msg)
