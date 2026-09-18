@@ -128,9 +128,24 @@ func (s *Server) branch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A database this branch already has a request against is not somewhere it
+	// can go, so it is not offered. Same rule Candidates already applies to
+	// databases that cannot be diffed or written to: a choice that will be
+	// refused at the next step should not be a choice.
+	taken := make(map[int64]bool, len(live))
+	for _, lr := range live {
+		taken[lr.DatabaseID] = true
+	}
+	open := make([]store.DatabaseRow, 0, len(candidates))
+	for _, c := range candidates {
+		if !taken[c.ID] {
+			open = append(open, c)
+		}
+	}
+
 	data := map[string]any{
 		"B": b, "Diverged": diverged, "Commits": commits,
-		"Candidates": candidates, "Merge": merge, "LiveRequests": live,
+		"Candidates": open, "Merge": merge, "LiveRequests": live,
 		// Only while a write is genuinely in flight. A page that reloads when
 		// nothing is happening throws away whatever the reader was doing.
 		"Refresh": b.Applying,

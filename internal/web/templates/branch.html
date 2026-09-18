@@ -116,10 +116,6 @@ one side or the other.</p>
     rehearsed and promoted like any other. The database's own work since the cut
     is kept.</p>
     {{if .LiveRequests}}
-    {{/* Shown before the form rather than instead of it: the branch may already
-         have a request against one database and still have somewhere else to
-         go. What this prevents is the second person — or the second tab —
-         opening a duplicate without knowing the first exists. */}}
     <div class="banner warn">
       <b>Already open from this branch.</b> Add to one of these rather than
       starting another for the same work.
@@ -131,6 +127,12 @@ one side or the other.</p>
       </ul>
     </div>
     {{end}}
+    {{/* The form only where there is still somewhere to go. A database this
+         branch already has a request against is not a choice — offering it and
+         refusing the press is worse than not offering it. The form survives a
+         request against one database because the branch may still have another
+         to reach; it goes entirely when none is left. */}}
+    {{if .Candidates}}
     <form method="post" action="/branches/{{$b.ID}}/act" class="edit">
       <input type="hidden" name="csrf" value="{{.CSRF}}">
       <input type="hidden" name="do" value="merge">
@@ -146,6 +148,10 @@ one side or the other.</p>
       {{if not $b.Diverged}}<span class="hint">Nothing to merge: this branch has
       not diverged from where it was cut.</span>{{end}}
     </form>
+    {{else}}
+    <p class="hint">Every database this branch could go to already has a request
+    open from it. Settle one of those, or close it, before starting another.</p>
+    {{end}}
   </div>
 </div>
 {{end}}

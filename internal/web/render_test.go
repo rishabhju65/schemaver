@@ -404,3 +404,58 @@ func TestATableRenameQuestionReadsAsATable(t *testing.T) {
 		}
 	}
 }
+
+// TestTheMergeFormGoesWhenThereIsNowhereLeft checks the page does not offer a
+// button that would be refused.
+//
+// A branch with a request already open against the only database it could
+// reach has nowhere to go. Showing the form there invites a press that fails,
+// which is worse than showing nothing.
+func TestTheMergeFormGoesWhenThereIsNowhereLeft(t *testing.T) {
+	s := server(t, auth.Completed(), false)
+
+	branch := &store.Branch{
+		ID: 7, Name: "add-channel", Origin: "shop_staging", OriginID: 3,
+		Base:      schema.Version("aaaa111122223333444455556666777788889999aaaabbbbccccddddeeeeffff"),
+		Head:      schema.Version("bbbb111122223333444455556666777788889999aaaabbbbccccddddeeeeffff"),
+		CreatedBy: "admin@example.com", CreatedAt: time.Now(),
+	}
+	live := []store.BranchRequest{{
+		ID: 42, DatabaseID: 3, Title: "add channel to staging",
+		Database: "shop_staging", State: "IN_REVIEW",
+	}}
+
+	render := func(candidates []store.DatabaseRow) string {
+		t.Helper()
+		var out strings.Builder
+		if err := s.tmpl["branch"].ExecuteTemplate(&out, "layout", map[string]any{
+			"B": branch, "Title": branch.Name, "Nav": "branches", "CSRF": "t",
+			"CanWrite": true, "Diverged": store.Delta{},
+			"Candidates": candidates, "LiveRequests": live,
+		}); err != nil {
+			t.Fatalf("render: %v", err)
+		}
+		return out.String()
+	}
+
+	// Nowhere left: the only database it could reach already has the request.
+	gone := render(nil)
+	if strings.Contains(gone, "Open a change request") {
+		t.Error("the button is offered although every database this branch " +
+			"could reach already has a request open from it")
+	}
+	for _, want := range []string{"#42 add channel to staging", "already has a request"} {
+		if !strings.Contains(gone, want) {
+			t.Errorf("the page never says %q, so the reason is invisible", want)
+		}
+	}
+
+	// Somewhere still to go: the form stays, and the open one is still listed.
+	left := render([]store.DatabaseRow{{ID: 9, Name: "shop_prod", Instance: "prod-1"}})
+	if !strings.Contains(left, "Open a change request") {
+		t.Error("the form vanished although the branch can still reach shop_prod")
+	}
+	if !strings.Contains(left, "#42") {
+		t.Error("the request already open is no longer listed")
+	}
+}

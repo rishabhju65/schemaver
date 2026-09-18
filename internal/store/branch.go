@@ -717,10 +717,13 @@ func (s *Scope) recordBranchMerge(ctx context.Context, requestID int64, m *Branc
 // BranchRequest is a change request opened from a branch, as the branch page
 // lists them.
 type BranchRequest struct {
-	ID       int64
-	Title    string
-	Database string
-	State    string
+	ID int64
+	// DatabaseID is carried so the page can drop that database from the list of
+	// places this branch could still go.
+	DatabaseID int64
+	Title      string
+	Database   string
+	State      string
 }
 
 // LiveRequests lists the requests still in play for a branch.
@@ -731,7 +734,8 @@ type BranchRequest struct {
 // anything.
 func (s *Scope) LiveRequests(ctx context.Context, branchID int64) ([]BranchRequest, error) {
 	rows, err := s.store.pool.Query(ctx, `
-		SELECT r.id, r.title, COALESCE(d.name, ''), r.state
+		SELECT r.id, COALESCE(r.database_id, 0), r.title,
+		       COALESCE(d.name, ''), r.state
 		  FROM schemaver.change_request r
 		  LEFT JOIN schemaver.database d ON d.id = r.database_id
 		 WHERE r.branch_id = $1 AND r.project_id = ANY($2)
@@ -745,7 +749,8 @@ func (s *Scope) LiveRequests(ctx context.Context, branchID int64) ([]BranchReque
 	var out []BranchRequest
 	for rows.Next() {
 		var b BranchRequest
-		if err := rows.Scan(&b.ID, &b.Title, &b.Database, &b.State); err != nil {
+		if err := rows.Scan(&b.ID, &b.DatabaseID, &b.Title, &b.Database,
+			&b.State); err != nil {
 			return nil, fmt.Errorf("scan branch request: %w", err)
 		}
 		out = append(out, b)
