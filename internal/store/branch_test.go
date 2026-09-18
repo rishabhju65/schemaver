@@ -482,6 +482,13 @@ func TestABranchMergeRecordsItsBase(t *testing.T) {
 		t.Errorf("a change where only the branch moved is not a merge, got base %q", *recorded)
 	}
 
+	// Closed before the next one is opened. A branch may have one request in
+	// play against a database at a time, and this test wants two in sequence
+	// rather than two at once.
+	if err := scope.CloseRequest(ctx, userID, plain, "checking the other case"); err != nil {
+		t.Fatalf("CloseRequest: %v", err)
+	}
+
 	// Now the database moves too, and it is.
 	moveDatabase(ctx, t, pool, databaseID, table(text("id"), text("audit_ref")))
 	merged, err := scope.MergeBranch(ctx, userID, id, databaseID, "merged", "")

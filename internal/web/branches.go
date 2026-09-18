@@ -120,9 +120,17 @@ func (s *Server) branch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Requests already open from this branch, so somebody arriving at the page
+	// sees them before pressing the button that would make another.
+	live, err := scope.LiveRequests(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
 	data := map[string]any{
 		"B": b, "Diverged": diverged, "Commits": commits,
-		"Candidates": candidates, "Merge": merge,
+		"Candidates": candidates, "Merge": merge, "LiveRequests": live,
 		// Only while a write is genuinely in flight. A page that reloads when
 		// nothing is happening throws away whatever the reader was doing.
 		"Refresh": b.Applying,

@@ -595,6 +595,28 @@ func (s *Scope) MergeBranch(ctx context.Context, actorID, branchID, databaseID i
 			m.Database)
 	}
 
+	// One request in play per branch per database. Without this, pressing the
+	// button twice — or having two tabs open, or going back — opened a second
+	// request carrying the same statements, and both sat in review looking
+	// real. A unique index enforces it as well; this is here so the answer is a
+	// sentence rather than a constraint violation.
+	//
+	// A settled or completed request does not block a new one: a branch that has
+	// moved on since it last landed is entitled to land again.
+	var openID int64
+	if err := s.store.pool.QueryRow(ctx, `
+		SELECT id FROM schemaver.change_request
+		 WHERE branch_id = $1 AND database_id = $2
+		   AND state NOT IN ('CLOSED', 'DONE', 'REVERTED', 'COMPLETED')
+		 ORDER BY id LIMIT 1`, branchID, databaseID).Scan(&openID); err == nil {
+		return 0, fmt.Errorf(
+			"change request #%d is already open for this branch against %s; "+
+				"add to it or close it rather than opening a second one for the "+
+				"same work", openID, m.Database)
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return 0, fmt.Errorf("check for an existing request: %w", err)
+	}
+
 	if strings.TrimSpace(title) == "" {
 		title = "Merge " + m.Branch.Name + " into " + m.Database
 	}
@@ -690,4 +712,43 @@ func (s *Scope) recordBranchMerge(ctx context.Context, requestID int64, m *Branc
 		return err
 	}
 	return nil
+}
+
+// BranchRequest is a change request opened from a branch, as the branch page
+// lists them.
+type BranchRequest struct {
+	ID       int64
+	Title    string
+	Database string
+	State    string
+}
+
+// LiveRequests lists the requests still in play for a branch.
+//
+// Shown on the branch page so that the second person to look at it can see the
+// first one's request rather than opening their own. Settled and completed ones
+// are left out: they are history, and history does not stop anybody doing
+// anything.
+func (s *Scope) LiveRequests(ctx context.Context, branchID int64) ([]BranchRequest, error) {
+	rows, err := s.store.pool.Query(ctx, `
+		SELECT r.id, r.title, COALESCE(d.name, ''), r.state
+		  FROM schemaver.change_request r
+		  LEFT JOIN schemaver.database d ON d.id = r.database_id
+		 WHERE r.branch_id = $1 AND r.project_id = ANY($2)
+		   AND r.state NOT IN ('CLOSED', 'DONE', 'REVERTED', 'COMPLETED')
+		 ORDER BY r.id`, branchID, s.projects)
+	if err != nil {
+		return nil, fmt.Errorf("list open requests for branch %d: %w", branchID, err)
+	}
+	defer rows.Close()
+
+	var out []BranchRequest
+	for rows.Next() {
+		var b BranchRequest
+		if err := rows.Scan(&b.ID, &b.Title, &b.Database, &b.State); err != nil {
+			return nil, fmt.Errorf("scan branch request: %w", err)
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
 }
