@@ -82,6 +82,20 @@ anything said on this page are kept.</p>
       {{else}}<span class="removed">✗ not yet through {{.PromotionSource}}</span>{{end}}
     {{end}}
   </div>
+  {{if eq .ProofState "pending"}}
+  {{/* The gate's first condition, and the one most likely to be true straight
+       after an approval. Without this the page says nothing, offers no button,
+       and looks exactly as it did before the approval — which reads as the
+       approval not having worked. The page refreshes itself while this is
+       showing, so the button arrives when it becomes true rather than when
+       somebody happens to reload. */}}
+  <p class="banner warn" style="margin:14px 0 0">
+    <b>Rehearsing this migration.</b> It is being applied to a throwaway copy
+    built at this database's current schema, to confirm it produces the schema
+    it declares. This usually takes a few seconds; the page will update itself
+    when it finishes.
+  </p>
+  {{end}}
   {{if eq .ProofState "unproven"}}
   {{/* Not a failure of the migration — a failure to check it. Said plainly,
        because everything downstream, including the executor's own account of a

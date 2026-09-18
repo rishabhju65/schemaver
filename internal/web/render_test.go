@@ -459,3 +459,49 @@ func TestTheMergeFormGoesWhenThereIsNowhereLeft(t *testing.T) {
 		t.Error("the request already open is no longer listed")
 	}
 }
+
+// TestAPendingRehearsalExplainsItselfAndRefreshes covers the gap straight after
+// an approval.
+//
+// A pending rehearsal is the gate's first condition, so it is usually what is
+// true the moment somebody approves. The page had no display for it at all: no
+// button, no explanation, and no reload — identical to the page before the
+// approval, which reads as the approval not having worked.
+func TestAPendingRehearsalExplainsItselfAndRefreshes(t *testing.T) {
+	s := server(t, auth.Completed(), false)
+
+	detail := &store.RequestDetail{
+		RequestSummary: store.RequestSummary{
+			ID: 21, Title: "add a column", Author: "admin@example.com",
+			State: "IN_REVIEW", Database: "shop_staging", CreatedAt: time.Now(),
+		},
+		MigrationID: 31,
+		Approval: &store.ApprovalState{
+			MigrationID: 31, ProofState: "pending",
+			AdminApprovals: 1, Executable: false,
+		},
+	}
+
+	var out strings.Builder
+	if err := s.tmpl["request"].ExecuteTemplate(&out, "layout", map[string]any{
+		"R": detail, "Title": detail.Title, "Nav": "requests", "CSRF": "t",
+		"CanWrite": true,
+		// What the handler computes for a pending rehearsal.
+		"Refresh": detail.Approval.ProofState == "pending",
+	}); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	page := out.String()
+
+	if !strings.Contains(page, "Rehearsing this migration") {
+		t.Error("the page says nothing about the rehearsal it is waiting on, so " +
+			"an approval that changed nothing visible looks like it failed")
+	}
+	if !strings.Contains(page, "http-equiv=\"refresh\"") {
+		t.Error("the page does not reload itself, so the button arrives when " +
+			"somebody happens to refresh rather than when it becomes true")
+	}
+	if strings.Contains(page, "Ready to execute") {
+		t.Error("offered as ready while the rehearsal has not finished")
+	}
+}
