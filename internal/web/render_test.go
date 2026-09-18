@@ -505,3 +505,83 @@ func TestAPendingRehearsalExplainsItselfAndRefreshes(t *testing.T) {
 		t.Error("offered as ready while the rehearsal has not finished")
 	}
 }
+
+// TestEveryWaitSaysWhatItIsWaitingFor is the sweep.
+//
+// schemaver does its real work in the background — working out what a written
+// change does, rehearsing a migration, running one. Every one of those left the
+// page looking exactly as it did before the button was pressed, which reads as
+// the button having done nothing. Three separate bug reports were all this.
+func TestEveryWaitSaysWhatItIsWaitingFor(t *testing.T) {
+	s := server(t, auth.Completed(), false)
+
+	base := func() *store.RequestDetail {
+		return &store.RequestDetail{
+			RequestSummary: store.RequestSummary{
+				ID: 55, Title: "a change", Author: "admin@example.com",
+				State: "IN_REVIEW", Database: "shop_staging", CreatedAt: time.Now(),
+			},
+		}
+	}
+	render := func(d *store.RequestDetail) string {
+		t.Helper()
+		var out strings.Builder
+		if err := s.tmpl["request"].ExecuteTemplate(&out, "layout", map[string]any{
+			"R": d, "Title": d.Title, "Nav": "requests", "CSRF": "t",
+			"CanWrite": true, "Refresh": d.Working(),
+		}); err != nil {
+			t.Fatalf("render: %v", err)
+		}
+		return out.String()
+	}
+	reloads := func(page string) bool {
+		return strings.Contains(page, "http-equiv=\"refresh\"")
+	}
+
+	// Still working out what a written change does.
+	deriving := base()
+	deriving.State = "INITIATED"
+	deriving.AuthoredSQL = "ALTER TABLE orders ADD COLUMN x text;"
+	deriving.Deriving = true
+	page := render(deriving)
+	if !strings.Contains(page, "Working out what this change does") {
+		t.Error("a derivation in flight is not explained")
+	}
+	if strings.Contains(page, "already agree") {
+		t.Error("the page still guesses that the schemas agree while it is " +
+			"the one that has not finished looking")
+	}
+	if !reloads(page) {
+		t.Error("the page does not follow the derivation")
+	}
+
+	// Asked to run, not yet started.
+	queued := base()
+	queued.State = "READY_TO_EXECUTE"
+	queued.MigrationID = 9
+	queued.Approval = &store.ApprovalState{
+		MigrationID: 9, ProofState: "proven", AdminApprovals: 1, Executable: true,
+	}
+	page = render(queued)
+	if !strings.Contains(page, "Queued to run") {
+		t.Error("a run that has been asked for and not started says nothing, so " +
+			"pressing execute leaves the page it was on")
+	}
+	if strings.Contains(page, "Ready to execute") {
+		t.Error("still offering the press that has already happened")
+	}
+	if !reloads(page) {
+		t.Error("the page does not follow the queued run")
+	}
+
+	// Waiting on a person: must NOT reload, or it eats what they are typing.
+	waiting := base()
+	waiting.MigrationID = 9
+	waiting.Approval = &store.ApprovalState{
+		MigrationID: 9, ProofState: "proven", AdminApprovals: 0, Executable: false,
+	}
+	if page := render(waiting); reloads(page) {
+		t.Error("the page reloads while waiting for an approval, which discards " +
+			"whatever the reader was typing")
+	}
+}

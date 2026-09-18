@@ -159,6 +159,15 @@ type RequestDetail struct {
 	// statements to edit, and without this the only way past a typo is to
 	// abandon the request and write it again.
 	AuthoredSQL string
+
+	// Deriving is a request whose statements are still being worked out.
+	//
+	// A written change is understood by applying it to a throwaway database and
+	// reading the result, which is queued rather than done on the click. Until
+	// it finishes there is no migration — and a page that cannot tell that from
+	// "there was nothing to do" tells somebody their schemas already agree when
+	// schemaver has simply not finished looking.
+	Deriving bool
 }
 
 // Execution is the most recent attempt, or nil if there has never been one.
@@ -205,6 +214,10 @@ func (s *Scope) Request(ctx context.Context, id int64) (*RequestDetail, error) {
 		       COALESCE(m.changes, '[]'::jsonb),
 		       COALESCE(NULLIF(m.rename_candidates, 'null'::jsonb), '[]'::jsonb),
 		       COALESCE(r.authored_sql, ''),
+		       EXISTS (SELECT 1 FROM schemaver.job j
+		                WHERE j.kind = 'derive' AND j.target_kind = 'request'
+		                  AND j.target_id = r.id
+		                  AND j.state IN ('pending', 'running')),
 		       r.closed_at, COALESCE(cb.email, '')
 		  FROM schemaver.change_request r
 		  JOIN schemaver.database db ON db.id = r.database_id
@@ -219,7 +232,7 @@ func (s *Scope) Request(ctx context.Context, id int64) (*RequestDetail, error) {
 			&d.Database, &d.DatabaseID, &d.Source, &d.CreatedAt,
 			&migrationID, &from, &to, &generatedAt, &irreversible, &mergeBase,
 			&d.Branch, &d.BranchID,
-			&changesJSON, &renamesJSON, &d.AuthoredSQL,
+			&changesJSON, &renamesJSON, &d.AuthoredSQL, &d.Deriving,
 			&d.ClosedAt, &d.ClosedBy)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNoSuchRequest
@@ -539,6 +552,32 @@ func (d *RequestDetail) Ran() bool {
 
 // Pipeline reports that this change reaches more than one database.
 func (d *RequestDetail) Pipeline() bool { return len(d.Targets) > 1 }
+
+// Queued reports a run that has been asked for and not yet started.
+//
+// Pressing execute records the request as ready and queues the work; a worker
+// claims it a moment later. In between there is no execution to show, so a page
+// that only knows about running executions is identical to the page before the
+// press — which reads as the press having done nothing.
+func (d *RequestDetail) Queued() bool {
+	return d.State == "READY_TO_EXECUTE" && d.Execution() == nil
+}
+
+// Working reports that schemaver owes this request something that finishes on
+// its own: a derivation, a rehearsal, or a run. It is what decides whether the
+// page keeps itself up to date.
+//
+// Waiting on a person is deliberately not working. A page that reloads every
+// few seconds while somebody types a comment throws the comment away.
+func (d *RequestDetail) Working() bool {
+	if d.Deriving || d.Queued() {
+		return true
+	}
+	if x := d.Execution(); x != nil && x.Running() {
+		return true
+	}
+	return d.Approval != nil && d.Approval.ProofState == "pending"
+}
 
 // NextTarget is the database a press of the execute button would run against,
 // or nil when every target has the change.

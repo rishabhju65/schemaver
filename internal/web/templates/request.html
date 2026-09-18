@@ -25,7 +25,17 @@
      and never shown, and this page guessed instead: "either the two schemas
      already agree, or one of them has not been read yet", which is wrong and
      unhelpful in exactly the case somebody needs help. Say what happened. */}}
-{{if $r.StateReason}}
+{{if $r.Deriving}}
+{{/* The commonest reason there is no migration yet, and the one the guess below
+     got wrong. A written change is understood by applying it to a throwaway
+     database and reading the result, which takes seconds — so the page somebody
+     lands on after proposing one used to tell them their schemas already agree.
+     This page refreshes itself until the answer arrives. */}}
+<p class="banner warn"><b>Working out what this change does.</b> The statements
+are being applied to a throwaway copy of {{$r.Database}} so schemaver can read
+what schema they produce. This usually takes a few seconds; the page will update
+itself when it finishes.</p>
+{{else if $r.StateReason}}
 <p class="banner err"><b>This change could not be worked out.</b><br>
 {{/* pre-wrap because a merge conflict names one object per line, and a reason
      whose shape carries meaning must not be reflowed into a paragraph. */}}
@@ -125,7 +135,15 @@ anything said on this page are kept.</p>
   </p>
   {{end}}
   
-  {{if .Executable}}
+  {{if $r.Queued}}
+  {{/* Asked for, not yet started. Without this the page after pressing execute
+       is the page before it, button and all, and the natural reading is that
+       the press did nothing. */}}
+  <p class="banner warn" style="margin:14px 0 0">
+    <b>Queued to run.</b> Waiting for a worker to pick it up — usually moments.
+    This page will follow the run as it goes.
+  </p>
+  {{else if .Executable}}
   <p class="banner ok" style="margin:14px 0 0">Ready to execute.</p>
   {{if $.CanWrite}}
   <form method="post" action="/requests/{{$r.ID}}/act" style="margin-top:12px">

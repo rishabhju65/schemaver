@@ -147,18 +147,11 @@ func (s *Server) request(w http.ResponseWriter, r *http.Request) {
 		"R":             detail,
 		"OpenRenames":   open,
 		"RenameAnswers": answers,
-		// Only while something is actually in flight, and in flight means work
-		// that finishes on its own. A rehearsal runs in the background and is
-		// what the gate is usually waiting on right after an approval: without
-		// this the Execute button appears whenever somebody happens to reload
-		// rather than when it becomes true, which reads as the approval not
-		// having worked.
-		//
-		// Deliberately not while waiting for approvals. That waits on a person,
-		// and a page that reloads every few seconds throws away whatever the
-		// reader was typing.
-		"Refresh": (detail.Execution() != nil && detail.Execution().Running()) ||
-			(detail.Approval != nil && detail.Approval.ProofState == "pending"),
+		// Only while schemaver owes this request something that finishes on its
+		// own — a derivation, a rehearsal, a queued or running execution. See
+		// RequestDetail.Working, which is also what decides what the page says
+		// it is waiting for.
+		"Refresh": detail.Working(),
 		// The author cannot approve their own request unless they are the only
 		// administrator, so the button is hidden rather than offered and refused.
 		// Three questions about where a request is, asked once each rather than
