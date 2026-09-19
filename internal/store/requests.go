@@ -160,6 +160,16 @@ type RequestDetail struct {
 	// abandon the request and write it again.
 	AuthoredSQL string
 
+	// RunBlocked is why a queued run cannot start, empty where nothing is
+	// wrong.
+	//
+	// An execute job is claimable only while the plan's starting point still
+	// matches the database and the plan is still the current one. That is
+	// deliberate — a migration queued behind another waits instead of failing
+	// its precondition and retrying — but it means a job can sit unclaimable
+	// permanently, and "queued" then says the opposite of what is true.
+	RunBlocked string
+
 	// Deriving is a request whose statements are still being worked out.
 	//
 	// A written change is understood by applying it to a throwaway database and
@@ -318,6 +328,15 @@ func (s *Scope) Request(ctx context.Context, id int64) (*RequestDetail, error) {
 	}
 	if d.Executions, err = s.Executions(ctx, id); err != nil {
 		return nil, err
+	}
+
+	// Only for a run that was asked for and has not started. Anything else
+	// either has an execution to show or has not been queued, and asking would
+	// be a query per page view for a question nobody has.
+	if d.Queued() {
+		if d.RunBlocked, err = s.runBlockage(ctx, d.MigrationID); err != nil {
+			return nil, err
+		}
 	}
 	if d.Timeline, err = s.ActivityForRequest(ctx, id); err != nil {
 		return nil, err
@@ -553,6 +572,54 @@ func (d *RequestDetail) Ran() bool {
 // Pipeline reports that this change reaches more than one database.
 func (d *RequestDetail) Pipeline() bool { return len(d.Targets) > 1 }
 
+// runBlockage reports why a queued execution cannot be claimed.
+//
+// The conditions mirror the claim query exactly. They are asked separately
+// rather than inferred, because each has a different answer for the person
+// reading: a superseded plan needs the new one running, a moved database needs
+// the plan rebuilt, and a retired database needs neither.
+func (s *Scope) runBlockage(ctx context.Context, migrationID int64) (string, error) {
+	var superseded, retired bool
+	var dbName string
+	var migFrom, dbNow *string
+	err := s.store.pool.QueryRow(ctx, `
+		SELECT m.superseded_at IS NOT NULL, d.retired_at IS NOT NULL,
+		       COALESCE(d.name, ''), m.from_fingerprint, d.current_fingerprint
+		  FROM schemaver.job j
+		  JOIN schemaver.migration m ON m.id = j.target_id
+		  LEFT JOIN schemaver.database d ON d.id = j.database_id
+		 WHERE j.kind = 'execute' AND j.target_kind = 'migration'
+		   AND j.target_id = $1
+		   AND j.state IN ('pending', 'running')
+		 ORDER BY j.id DESC LIMIT 1`, migrationID).
+		Scan(&superseded, &retired, &dbName, &migFrom, &dbNow)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// No job at all. The request says it is ready to run and nothing was
+		// ever queued, which is its own kind of stuck.
+		return "nothing is queued for this migration, so pressing run again is " +
+			"what it needs", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("check why the run has not started: %w", err)
+	}
+	switch {
+	case superseded:
+		return "this plan has been replaced since the run was queued, so the " +
+			"queued one will never start; run the current plan instead", nil
+	case retired:
+		return dbName + " has been retired, so nothing will be applied to it", nil
+	case dbNow == nil:
+		return dbName + " has not been read successfully, so there is nothing " +
+			"to check this plan starts from", nil
+	case migFrom != nil && *dbNow != *migFrom:
+		return dbName + " has moved since this plan was made — the plan starts " +
+			"from " + schema.Version(*migFrom).Short() + " and the database is " +
+			"at " + schema.Version(*dbNow).Short() + ". Rebuild the plan and it " +
+			"becomes runnable again", nil
+	}
+	return "", nil
+}
+
 // Queued reports a run that has been asked for and not yet started.
 //
 // Pressing execute records the request as ready and queues the work; a worker
@@ -563,6 +630,10 @@ func (d *RequestDetail) Queued() bool {
 	return d.State == "READY_TO_EXECUTE" && d.Execution() == nil
 }
 
+// Stuck reports a queued run that cannot start. Nothing is going to happen, so
+// the page has no reason to keep reloading.
+func (d *RequestDetail) Stuck() bool { return d.Queued() && d.RunBlocked != "" }
+
 // Working reports that schemaver owes this request something that finishes on
 // its own: a derivation, a rehearsal, or a run. It is what decides whether the
 // page keeps itself up to date.
@@ -570,8 +641,13 @@ func (d *RequestDetail) Queued() bool {
 // Waiting on a person is deliberately not working. A page that reloads every
 // few seconds while somebody types a comment throws the comment away.
 func (d *RequestDetail) Working() bool {
-	if d.Deriving || d.Queued() {
+	if d.Deriving {
 		return true
+	}
+	if d.Queued() {
+		// Unless it cannot start. Reloading every few seconds forever, waiting
+		// for something that will not happen, is worse than standing still.
+		return !d.Stuck()
 	}
 	if x := d.Execution(); x != nil && x.Running() {
 		return true

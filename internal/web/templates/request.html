@@ -135,7 +135,15 @@ anything said on this page are kept.</p>
   </p>
   {{end}}
   
-  {{if $r.Queued}}
+  {{if and $r.Queued $r.RunBlocked}}
+  {{/* A queued run that cannot start. The claim is deliberately conditional —
+       a migration queued behind another waits rather than failing and retrying
+       — but the same condition can be permanently false, and "queued" then says
+       the opposite of what is true. Say which it is. */}}
+  <p class="banner err" style="margin:14px 0 0">
+    <b>This run is queued but cannot start.</b><br>{{$r.RunBlocked}}
+  </p>
+  {{else if $r.Queued}}
   {{/* Asked for, not yet started. Without this the page after pressing execute
        is the page before it, button and all, and the natural reading is that
        the press did nothing. */}}
