@@ -16,6 +16,7 @@ package introspect
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
@@ -376,6 +377,25 @@ func readConstraints(ctx context.Context, q Querier, tables map[tableKey]*schema
 	return rows.Err()
 }
 
+// ErrRead is a schema that could not be read completely, as opposed to one read
+// successfully and found to be empty. Retrying is the right response.
+var ErrRead = errors.New("the schema changed while it was being read")
+
+// definite converts a key list to plain strings, refusing one with a missing
+// entry.
+func definite(in []*string) ([]string, error) {
+	out := make([]string, 0, len(in))
+	for _, v := range in {
+		if v == nil {
+			return nil, fmt.Errorf(
+				"%w: one of its keys could not be read, which means it was "+
+					"dropped while this read was in progress", ErrRead)
+		}
+		out = append(out, *v)
+	}
+	return out, nil
+}
+
 func readIndexes(ctx context.Context, q Querier, tables map[tableKey]*schema.Table) error {
 	// pg_get_indexdef(oid, n, true) renders the nth key, which handles
 	// expression indexes that have no column name to report.
@@ -410,10 +430,29 @@ func readIndexes(ctx context.Context, q Querier, tables map[tableKey]*schema.Tab
 	for rows.Next() {
 		var k tableKey
 		var idx schema.Index
+		// Scanned as nullable because pg_get_indexdef is not bound by the
+		// transaction's snapshot, however the transaction is isolated. It reads
+		// the catalogue as it stands now, so an index dropped while this query
+		// runs answers NULL for every one of its keys — and pg_index, which is
+		// snapshot-bound, still reports the index as being there.
+		var cols, include []*string
 		if err := rows.Scan(&k.ns, &k.table, &idx.Name, &idx.Unique, &idx.Method,
-			&idx.Invalid, &idx.Columns, &idx.Include, &idx.Predicate,
+			&idx.Invalid, &cols, &include, &idx.Predicate,
 			&idx.Definition, &idx.Comment); err != nil {
 			return fmt.Errorf("scan index: %w", err)
+		}
+		// Abandoned rather than patched up. An index recorded with its keys
+		// missing is a different schema from the one that is really there, and
+		// a schema's fingerprint is its identity: writing a half-read one would
+		// report drift on every database it happened to, and the difference
+		// would be schemaver's own reading rather than anything that changed.
+		// The next observation reads it again.
+		var derr error
+		if idx.Columns, derr = definite(cols); derr != nil {
+			return fmt.Errorf("index %s.%s.%s: %w", k.ns, k.table, idx.Name, derr)
+		}
+		if idx.Include, derr = definite(include); derr != nil {
+			return fmt.Errorf("index %s.%s.%s: %w", k.ns, k.table, idx.Name, derr)
 		}
 		if t, ok := tables[k]; ok {
 			t.Indexes = append(t.Indexes, idx)
