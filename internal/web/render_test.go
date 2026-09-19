@@ -585,3 +585,49 @@ func TestEveryWaitSaysWhatItIsWaitingFor(t *testing.T) {
 			"whatever the reader was typing")
 	}
 }
+
+// TestThePageNeverTellsYouToPressWhatItIsHiding is the contradiction a real
+// deployment produced.
+//
+// The execute button lived inside the "ready to execute" arm of the same
+// if/else chain as the status banners, so a run reported as stuck displayed
+// "pressing run again is what it needs" with nothing to press. Which status is
+// shown and whether running is allowed are different questions.
+func TestThePageNeverTellsYouToPressWhatItIsHiding(t *testing.T) {
+	s := server(t, auth.Completed(), false)
+
+	detail := &store.RequestDetail{
+		RequestSummary: store.RequestSummary{
+			ID: 2, Title: "add a column", Author: "admin@example.com",
+			State: "READY_TO_EXECUTE", Database: "shop_staging",
+			CreatedAt: time.Now(),
+		},
+		MigrationID: 4,
+		RunBlocked: "nothing was ever queued for this migration, so pressing " +
+			"run again is what it needs",
+		Approval: &store.ApprovalState{
+			MigrationID: 4, ProofState: "proven", AdminApprovals: 1,
+			Executable: true,
+		},
+	}
+
+	var out strings.Builder
+	if err := s.tmpl["request"].ExecuteTemplate(&out, "layout", map[string]any{
+		"R": detail, "Title": detail.Title, "Nav": "requests", "CSRF": "t",
+		"CanWrite": true, "Refresh": detail.Working(),
+	}); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	page := out.String()
+
+	if !strings.Contains(page, "cannot start") {
+		t.Fatal("the blockage is not reported at all")
+	}
+	if !strings.Contains(page, `name="do" value="execute"`) {
+		t.Error("the page says pressing run again is what it needs and offers " +
+			"nothing to press")
+	}
+	if !strings.Contains(page, "Run it again") {
+		t.Error("the button does not read as the retry it is")
+	}
+}

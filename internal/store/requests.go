@@ -605,29 +605,42 @@ func (d *RequestDetail) Pipeline() bool { return len(d.Targets) > 1 }
 // the plan rebuilt, and a retired database needs neither.
 func (s *Scope) runBlockage(ctx context.Context, migrationID int64) (string, error) {
 	var superseded, retired bool
-	var dbName string
-	var migFrom, dbNow *string
+	var dbName, jobState string
+	var migFrom, dbNow, jobError *string
+	// Every state, not only the ones still in play. A job that failed or was
+	// cancelled leaves nothing queued, and reporting that as "nothing is
+	// queued" describes the absence while hiding the thing that caused it.
 	err := s.store.pool.QueryRow(ctx, `
-		SELECT m.superseded_at IS NOT NULL, d.retired_at IS NOT NULL,
+		SELECT j.state, j.error,
+		       m.superseded_at IS NOT NULL, d.retired_at IS NOT NULL,
 		       COALESCE(d.name, ''), m.from_fingerprint, d.current_fingerprint
 		  FROM schemaver.job j
 		  JOIN schemaver.migration m ON m.id = j.target_id
 		  LEFT JOIN schemaver.database d ON d.id = j.database_id
 		 WHERE j.kind = 'execute' AND j.target_kind = 'migration'
 		   AND j.target_id = $1
-		   AND j.state IN ('pending', 'running')
 		 ORDER BY j.id DESC LIMIT 1`, migrationID).
-		Scan(&superseded, &retired, &dbName, &migFrom, &dbNow)
+		Scan(&jobState, &jobError, &superseded, &retired, &dbName, &migFrom, &dbNow)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// No job at all. The request says it is ready to run and nothing was
 		// ever queued, which is its own kind of stuck.
-		return "nothing is queued for this migration, so pressing run again is " +
-			"what it needs", nil
+		return "nothing was ever queued for this migration, so pressing run " +
+			"again is what it needs", nil
 	}
 	if err != nil {
 		return "", fmt.Errorf("check why the run has not started: %w", err)
 	}
 	switch {
+	case jobState == "failed":
+		reason := "no reason was recorded"
+		if jobError != nil && *jobError != "" {
+			reason = *jobError
+		}
+		return "a run was attempted and failed: " + reason +
+			". Nothing is queued now, so running it again is what it needs", nil
+	case jobState == "cancelled":
+		return "the queued run was cancelled, so running it again is what it " +
+			"needs", nil
 	case superseded:
 		return "this plan has been replaced since the run was queued, so the " +
 			"queued one will never start; run the current plan instead", nil

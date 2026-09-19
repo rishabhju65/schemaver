@@ -161,3 +161,66 @@ func TestThePageStopsFollowingWorkThatNeverLands(t *testing.T) {
 			"worse than the stale page it was meant to replace")
 	}
 }
+
+// TestAFailedRunReportsTheFailureNotItsAbsence is the difference between
+// describing a symptom and naming a cause.
+//
+// A job that failed leaves nothing queued. Reporting that as "nothing is
+// queued" is true and useless: it describes the absence while hiding the thing
+// that caused it, and sends somebody to press a button whose last press is the
+// very thing they have not been told about.
+func TestAFailedRunReportsTheFailureNotItsAbsence(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	pool := mergeTestPool(ctx, t)
+
+	st := store.New(pool, nil)
+	projectID, userID, databaseID := branchFixture(ctx, t, pool, table(text("id")))
+	scope := st.ForProject(projectID)
+
+	branchID, err := scope.CutBranch(ctx, userID, databaseID, "failed-run", "")
+	if err != nil {
+		t.Fatalf("CutBranch: %v", err)
+	}
+	advance(ctx, t, pool, branchID, table(text("id"), text("channel")))
+	requestID, err := scope.MergeBranch(ctx, userID, branchID, databaseID, "failed", "")
+	if err != nil {
+		t.Fatalf("MergeBranch: %v", err)
+	}
+
+	var migrationID int64
+	if err := pool.QueryRow(ctx, `
+		SELECT id FROM schemaver.migration
+		 WHERE change_request_id = $1 AND superseded_at IS NULL`,
+		requestID).Scan(&migrationID); err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO schemaver.job
+		    (kind, target_kind, target_id, database_id, weight, idempotency_key,
+		     state, error, finished_at)
+		VALUES ('execute', 'migration', $1, $2, 1, $3, 'failed',
+		        'connect: dial tcp: connection refused', now())`,
+		migrationID, databaseID, "execute-failed-probe"); err != nil {
+		t.Fatalf("record the failed run: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		UPDATE schemaver.change_request SET state = 'READY_TO_EXECUTE' WHERE id = $1`,
+		requestID); err != nil {
+		t.Fatalf("mark ready: %v", err)
+	}
+
+	d, err := scope.Request(ctx, requestID)
+	if err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+	if d.RunBlocked == "" {
+		t.Fatal("a request whose run failed reports nothing wrong")
+	}
+	if !strings.Contains(d.RunBlocked, "connection refused") {
+		t.Errorf("the failure is not reported, only its absence: %q", d.RunBlocked)
+	}
+	if strings.Contains(d.RunBlocked, "nothing was ever queued") {
+		t.Error("a failed run is being described as one that never happened")
+	}
+}

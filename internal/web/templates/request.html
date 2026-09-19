@@ -163,19 +163,24 @@ anything said on this page are kept.</p>
   </p>
   {{else if .Executable}}
   <p class="banner ok" style="margin:14px 0 0">Ready to execute.</p>
-  {{if $.CanWrite}}
+  {{else}}
+  <p class="banner warn" style="margin:14px 0 0">Not executable: {{.Reason}}</p>
+  {{end}}
+
+  {{/* The button is decided by whether running is allowed, not by which status
+       is being shown above it. It used to sit inside the "ready" arm of that
+       chain, so a run reported as stuck said "pressing run again is what it
+       needs" with nothing to press. */}}
+  {{if and .Executable $.CanWrite}}
   <form method="post" action="/requests/{{$r.ID}}/act" style="margin-top:12px">
     <input type="hidden" name="csrf" value="{{$.CSRF}}">
     <input type="hidden" name="do" value="execute">
-    <button type="submit" style="width:auto">Execute against
-      {{with $r.NextTarget}}{{.Name}}{{else}}{{$r.Database}}{{end}}</button>
+    <button type="submit" style="width:auto">{{if $r.Queued}}Run it again{{else}}Execute against
+      {{with $r.NextTarget}}{{.Name}}{{else}}{{$r.Database}}{{end}}{{end}}</button>
     <span class="hint">Queued and applied under an exclusive lock. The gate is
     checked again at that moment, and once more against the live schema before
     any statement runs.</span>
   </form>
-  {{end}}
-  {{else}}
-  <p class="banner warn" style="margin:14px 0 0">Not executable: {{.Reason}}</p>
   {{end}}
 </div>
 {{end}}
