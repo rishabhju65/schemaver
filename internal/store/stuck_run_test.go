@@ -97,3 +97,67 @@ func TestAQueuedRunThatCannotStartSaysWhy(t *testing.T) {
 			"that will not happen")
 	}
 }
+
+// TestThePageStopsFollowingWorkThatNeverLands is the backstop.
+//
+// Specific reasons a piece of work never finishes are worth diagnosing one by
+// one, and each of those diagnoses is a thing somebody had to think of. This
+// covers the ones nobody thought of: whatever is outstanding, the page stops
+// following it eventually rather than polling for ever.
+func TestThePageStopsFollowingWorkThatNeverLands(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	pool := mergeTestPool(ctx, t)
+
+	st := store.New(pool, nil)
+	projectID, userID, databaseID := branchFixture(ctx, t, pool, table(text("id")))
+	scope := st.ForProject(projectID)
+
+	branchID, err := scope.CutBranch(ctx, userID, databaseID, "overdue", "")
+	if err != nil {
+		t.Fatalf("CutBranch: %v", err)
+	}
+	advance(ctx, t, pool, branchID, table(text("id"), text("channel")))
+	requestID, err := scope.MergeBranch(ctx, userID, branchID, databaseID, "overdue", "")
+	if err != nil {
+		t.Fatalf("MergeBranch: %v", err)
+	}
+
+	var migrationID int64
+	if err := pool.QueryRow(ctx, `
+		SELECT id FROM schemaver.migration
+		 WHERE change_request_id = $1 AND superseded_at IS NULL`,
+		requestID).Scan(&migrationID); err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+
+	// A job queued long ago and never claimed — whatever the reason.
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO schemaver.job
+		    (kind, target_kind, target_id, database_id, weight, idempotency_key,
+		     created_at)
+		VALUES ('execute', 'migration', $1, $2, 1, $3, now() - interval '1 hour')`,
+		migrationID, databaseID, "execute-overdue-probe"); err != nil {
+		t.Fatalf("queue the run: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		UPDATE schemaver.change_request SET state = 'READY_TO_EXECUTE' WHERE id = $1`,
+		requestID); err != nil {
+		t.Fatalf("mark ready: %v", err)
+	}
+
+	d, err := scope.Request(ctx, requestID)
+	if err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+	if d.WaitingSince.IsZero() {
+		t.Fatal("the page cannot tell how long it has been waiting")
+	}
+	if !d.Overdue() {
+		t.Error("work queued an hour ago is still being followed")
+	}
+	if d.Working() {
+		t.Error("the page would keep polling the backend for ever; that is " +
+			"worse than the stale page it was meant to replace")
+	}
+}

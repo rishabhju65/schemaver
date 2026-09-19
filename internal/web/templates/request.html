@@ -135,6 +135,16 @@ anything said on this page are kept.</p>
   </p>
   {{end}}
   
+  {{if $r.Overdue}}
+  {{/* The backstop. Some specific reasons work never lands are diagnosed above;
+       this covers the ones nobody anticipated, so the page cannot poll for ever
+       waiting on something that is not coming. */}}
+  <p class="banner err" style="margin:14px 0 0">
+    <b>This is taking longer than expected.</b> Work was queued for this change
+    and has not finished, so the page has stopped following it. Reload to check
+    again, or look at Activity for what the workers have been doing.
+  </p>
+  {{end}}
   {{if and $r.Queued $r.RunBlocked}}
   {{/* A queued run that cannot start. The claim is deliberately conditional —
        a migration queued behind another waits rather than failing and retrying

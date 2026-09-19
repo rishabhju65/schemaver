@@ -160,6 +160,15 @@ type RequestDetail struct {
 	// abandon the request and write it again.
 	AuthoredSQL string
 
+	// WaitingSince is when the outstanding background work was queued, zero
+	// where none is.
+	//
+	// Used to bound the page's self-refreshing. Whatever the reason a piece of
+	// work does not finish — a worker that is gone, a precondition nobody
+	// anticipated, a bug — a page that polls for it forever is worse than a
+	// stale page, and the reader cannot be the one who notices.
+	WaitingSince time.Time
+
 	// RunBlocked is why a queued run cannot start, empty where nothing is
 	// wrong.
 	//
@@ -337,6 +346,22 @@ func (s *Scope) Request(ctx context.Context, id int64) (*RequestDetail, error) {
 		if d.RunBlocked, err = s.runBlockage(ctx, d.MigrationID); err != nil {
 			return nil, err
 		}
+	}
+
+	// When the oldest outstanding piece of work for this request was queued,
+	// whatever kind it is. One question rather than one per kind, because the
+	// page only wants to know how long it has been waiting.
+	var since *time.Time
+	if err := s.store.pool.QueryRow(ctx, `
+		SELECT min(j.created_at) FROM schemaver.job j
+		 WHERE j.state IN ('pending', 'running')
+		   AND ((j.target_kind = 'request' AND j.target_id = $1)
+		     OR (j.target_kind = 'migration' AND j.target_id = $2))`,
+		id, d.MigrationID).Scan(&since); err != nil {
+		return nil, fmt.Errorf("check how long this has been waiting: %w", err)
+	}
+	if since != nil {
+		d.WaitingSince = *since
 	}
 	if d.Timeline, err = s.ActivityForRequest(ctx, id); err != nil {
 		return nil, err
@@ -634,6 +659,21 @@ func (d *RequestDetail) Queued() bool {
 // the page has no reason to keep reloading.
 func (d *RequestDetail) Stuck() bool { return d.Queued() && d.RunBlocked != "" }
 
+// patience is how long the page will follow a piece of work before giving up on
+// it.
+//
+// Generous against the slowest thing it waits for — a rehearsal of a large
+// schema — and far short of forever. Every specific reason work might never
+// finish is worth diagnosing, and this is the backstop for the ones nobody
+// thought of.
+const patience = 3 * time.Minute
+
+// Overdue reports work that has been outstanding longer than the page is
+// willing to follow.
+func (d *RequestDetail) Overdue() bool {
+	return !d.WaitingSince.IsZero() && time.Since(d.WaitingSince) > patience
+}
+
 // Working reports that schemaver owes this request something that finishes on
 // its own: a derivation, a rehearsal, or a run. It is what decides whether the
 // page keeps itself up to date.
@@ -641,6 +681,12 @@ func (d *RequestDetail) Stuck() bool { return d.Queued() && d.RunBlocked != "" }
 // Waiting on a person is deliberately not working. A page that reloads every
 // few seconds while somebody types a comment throws the comment away.
 func (d *RequestDetail) Working() bool {
+	// Whatever is outstanding, the page stops following it eventually. This is
+	// the one check that does not depend on having understood why a particular
+	// piece of work might never land.
+	if d.Overdue() {
+		return false
+	}
 	if d.Deriving {
 		return true
 	}
